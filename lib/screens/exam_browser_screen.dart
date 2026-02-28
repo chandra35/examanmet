@@ -34,8 +34,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   Timer? _immersiveTimer;
   Timer? _configRefreshTimer;
   Timer? _notifCheckTimer;
+  Timer? _securityAuditTimer;
   int _violationCount = 0;
   static const int _maxViolations = 5;
+  bool _securityWarningShown = false;
 
   @override
   void initState() {
@@ -52,6 +54,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     _immersiveTimer?.cancel();
     _configRefreshTimer?.cancel();
     _notifCheckTimer?.cancel();
+    _securityAuditTimer?.cancel();
+    _lockdownService.onSecurityEvent = null;
     _lockdownService.disableLockdown();
     WakelockPlus.disable();
     super.dispose();
@@ -90,6 +94,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Initialize lockdown
     _lockdownService.initialize(config);
     await _lockdownService.enableLockdown();
+
+    // Listen for real-time security events from native
+    _lockdownService.onSecurityEvent = _handleSecurityEvent;
 
     // Keep screen awake
     await WakelockPlus.enable();
@@ -132,6 +139,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     );
     // Also check immediately
     _checkNotifications();
+
+    // Periodic security audit (check developer options, ADB, accessibility, etc.)
+    _securityAuditTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _performSecurityAudit(),
+    );
+    // Run initial audit after short delay
+    Future.delayed(const Duration(seconds: 2), _performSecurityAudit);
 
     setState(() => _isLoading = false);
   }
@@ -295,6 +310,211 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                 });
               })();
             ''');
+
+            // Inject custom styled select dropdowns to replace native Android picker
+            await _webController.runJavaScript('''
+              (function() {
+                if (window.__customSelectInjected) return;
+                window.__customSelectInjected = true;
+
+                var style = document.createElement('style');
+                style.textContent = \`
+                  .csb-overlay {
+                    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                    background: rgba(0,0,0,0.45); z-index: 99998;
+                    opacity: 0; transition: opacity 0.25s ease;
+                    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+                  }
+                  .csb-overlay.show { opacity: 1; }
+                  .csb-dropdown {
+                    position: fixed; left: 50%; top: 50%;
+                    transform: translate(-50%, -50%) scale(0.8);
+                    width: 88%; max-width: 360px; max-height: 65vh;
+                    background: #fff; border-radius: 20px;
+                    z-index: 99999; overflow: hidden;
+                    box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+                    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s;
+                    display: flex; flex-direction: column;
+                    opacity: 0;
+                  }
+                  .csb-dropdown.show { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+                  .csb-header {
+                    padding: 16px 20px 12px; border-bottom: 1px solid #f0f0f0;
+                    display: flex; align-items: center; justify-content: space-between;
+                    background: linear-gradient(135deg, #0D47A1, #1565C0);
+                    border-radius: 20px 20px 0 0;
+                  }
+                  .csb-header-title {
+                    color: #fff; font-size: 16px; font-weight: 700;
+                    letter-spacing: 0.3px;
+                  }
+                  .csb-header-close {
+                    width: 30px; height: 30px; border-radius: 50%;
+                    background: rgba(255,255,255,0.2); border: none;
+                    color: #fff; font-size: 18px; cursor: pointer;
+                    display: flex; align-items: center; justify-content: center;
+                  }
+                  .csb-options {
+                    overflow-y: auto; flex: 1; padding: 8px 0;
+                    -webkit-overflow-scrolling: touch;
+                  }
+                  .csb-option {
+                    padding: 14px 20px; cursor: pointer;
+                    display: flex; align-items: center; justify-content: space-between;
+                    font-size: 15px; color: #333;
+                    border-bottom: 1px solid #f5f5f5;
+                  }
+                  .csb-option:active { background: #e3f2fd; }
+                  .csb-option.selected {
+                    background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+                    color: #0D47A1; font-weight: 600;
+                  }
+                  .csb-option .csb-check {
+                    width: 22px; height: 22px; border-radius: 50%;
+                    border: 2px solid #ccc; display: flex;
+                    align-items: center; justify-content: center;
+                    flex-shrink: 0; margin-left: 12px;
+                  }
+                  .csb-option.selected .csb-check {
+                    border-color: #0D47A1; background: #0D47A1;
+                  }
+                  .csb-option.selected .csb-check::after {
+                    content: ''; width: 6px; height: 10px;
+                    border: solid #fff; border-width: 0 2px 2px 0;
+                    transform: rotate(45deg); margin-top: -2px;
+                  }
+                  .csb-handle {
+                    width: 40px; height: 4px; background: #ddd;
+                    border-radius: 2px; margin: 8px auto 0;
+                  }
+                  .csb-trigger {
+                    display: inline-flex; align-items: center;
+                    padding: 8px 14px; background: #fff;
+                    border: 2px solid #1565C0; border-radius: 10px;
+                    font-size: 14px; color: #0D47A1; font-weight: 500;
+                    cursor: pointer; min-width: 100px;
+                    box-shadow: 0 2px 6px rgba(13,71,161,0.12);
+                    transition: all 0.2s;
+                  }
+                  .csb-trigger:active {
+                    background: #e3f2fd; transform: scale(0.97);
+                  }
+                  .csb-trigger-text {
+                    flex: 1; margin-right: 8px;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                  }
+                  .csb-trigger-arrow {
+                    width: 0; height: 0;
+                    border-left: 5px solid transparent;
+                    border-right: 5px solid transparent;
+                    border-top: 6px solid #1565C0;
+                    flex-shrink: 0;
+                  }
+                  select[data-csb-hidden] {
+                    position: absolute !important; 
+                    opacity: 0 !important; 
+                    pointer-events: none !important;
+                    width: 0 !important; height: 0 !important;
+                    overflow: hidden !important;
+                  }
+                \`;
+                document.head.appendChild(style);
+
+                function openCustomSelect(selectEl, triggerEl) {
+                  var overlay = document.createElement('div');
+                  overlay.className = 'csb-overlay';
+                  var dropdown = document.createElement('div');
+                  dropdown.className = 'csb-dropdown';
+
+                  var header = document.createElement('div');
+                  header.className = 'csb-header';
+                  var htitle = document.createElement('span');
+                  htitle.className = 'csb-header-title';
+                  htitle.textContent = 'Pilih Jawaban';
+                  var closeBtn = document.createElement('button');
+                  closeBtn.className = 'csb-header-close';
+                  closeBtn.innerHTML = '\\u2715';
+                  header.appendChild(htitle);
+                  header.appendChild(closeBtn);
+                  dropdown.appendChild(header);
+
+                  var optionsDiv = document.createElement('div');
+                  optionsDiv.className = 'csb-options';
+
+                  for (var i = 0; i < selectEl.options.length; i++) {
+                    (function(idx) {
+                      var opt = document.createElement('div');
+                      opt.className = 'csb-option' + (selectEl.selectedIndex === idx ? ' selected' : '');
+                      var lbl = document.createElement('span');
+                      lbl.textContent = selectEl.options[idx].text || '(kosong)';
+                      var chk = document.createElement('div');
+                      chk.className = 'csb-check';
+                      opt.appendChild(lbl);
+                      opt.appendChild(chk);
+                      opt.addEventListener('click', function() {
+                        selectEl.selectedIndex = idx;
+                        selectEl.dispatchEvent(new Event('change', {bubbles: true}));
+                        if (triggerEl) {
+                          triggerEl.querySelector('.csb-trigger-text').textContent = selectEl.options[idx].text;
+                        }
+                        doClose();
+                      });
+                      optionsDiv.appendChild(opt);
+                    })(i);
+                  }
+                  dropdown.appendChild(optionsDiv);
+
+                  document.body.appendChild(overlay);
+                  document.body.appendChild(dropdown);
+
+                  requestAnimationFrame(function() {
+                    overlay.classList.add('show');
+                    dropdown.classList.add('show');
+                  });
+
+                  function doClose() {
+                    overlay.classList.remove('show');
+                    dropdown.style.transform = 'translate(-50%, -50%) scale(0.8)';
+                    dropdown.style.opacity = '0';
+                    setTimeout(function() { overlay.remove(); dropdown.remove(); }, 300);
+                  }
+                  overlay.addEventListener('click', doClose);
+                  closeBtn.addEventListener('click', doClose);
+                }
+
+                function replaceSelects() {
+                  document.querySelectorAll('select:not([data-csb-hidden])').forEach(function(sel) {
+                    sel.setAttribute('data-csb-hidden', '1');
+
+                    var trigger = document.createElement('div');
+                    trigger.className = 'csb-trigger';
+                    var txt = document.createElement('span');
+                    txt.className = 'csb-trigger-text';
+                    txt.textContent = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : 'Pilih...';
+                    var arrow = document.createElement('div');
+                    arrow.className = 'csb-trigger-arrow';
+                    trigger.appendChild(txt);
+                    trigger.appendChild(arrow);
+
+                    trigger.addEventListener('click', function(e) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openCustomSelect(sel, trigger);
+                    });
+
+                    sel.parentNode.insertBefore(trigger, sel.nextSibling);
+
+                    sel.addEventListener('change', function() {
+                      txt.textContent = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : 'Pilih...';
+                    });
+                  });
+                }
+
+                replaceSelects();
+                var obs = new MutationObserver(function() { replaceSelects(); });
+                obs.observe(document.body, { childList: true, subtree: true });
+              })();
+            ''');
           },
           onNavigationRequest: (request) {
             final url = request.url;
@@ -384,6 +604,55 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     }
   }
 
+  /// Handle real-time security events from native Android
+  void _handleSecurityEvent(String event) {
+    if (!mounted) return;
+    debugPrint('[SECURITY_EVENT] $event');
+
+    // Increment violation for critical events
+    if (event == 'home_pressed' || event == 'recent_pressed' || event == 'multi_window_detected') {
+      _violationCount++;
+    }
+  }
+
+  /// Perform periodic security audit
+  Future<void> _performSecurityAudit() async {
+    if (!mounted || _config == null) return;
+
+    try {
+      final threats = await _lockdownService.getSecurityThreats();
+
+      if (!mounted) return;
+
+      if (threats.hasThreats && !_securityWarningShown) {
+        _securityWarningShown = true;
+        final descriptions = threats.threatDescriptions;
+
+        _showAnimatedDialog(
+          icon: Icons.security_rounded,
+          iconColor: Colors.white,
+          iconBgColor: Colors.red.shade700,
+          title: 'ANCAMAN KEAMANAN!',
+          titleColor: Colors.red.shade700,
+          message:
+              'Terdeteksi potensi kecurangan pada perangkat Anda:\n\n'
+              '${descriptions.map((d) => '• $d').join('\n')}\n\n'
+              'Silakan nonaktifkan sebelum melanjutkan ujian.\n'
+              'Tindakan ini dicatat dan dilaporkan ke pengawas.',
+          buttonText: 'Saya Mengerti',
+          buttonColor: Colors.red.shade700,
+        );
+
+        // Reset flag after 30 seconds to allow re-check
+        Future.delayed(const Duration(seconds: 30), () {
+          _securityWarningShown = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Security audit error: $e');
+    }
+  }
+
   void _showBlockedUrlDialog(String url) {
     _showAnimatedDialog(
       icon: Icons.block_rounded,
@@ -442,20 +711,44 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         body: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0xFF0D47A1), Color(0xFF1976D2)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF0D47A1), Color(0xFF1565C0), Color(0xFF0277BD)],
             ),
           ),
-          child: const Center(
+          child: Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                CircularProgressIndicator(color: Colors.white),
-                SizedBox(height: 16),
-                Text(
+                // Pulsing shield icon
+                Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white.withOpacity(0.1),
+                    border: Border.all(color: Colors.white.withOpacity(0.2)),
+                  ),
+                  child: const Icon(Icons.shield_rounded, color: Colors.white, size: 40),
+                ),
+                const SizedBox(height: 24),
+                const SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2.5,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
                   'Mempersiapkan ujian...',
-                  style: TextStyle(color: Colors.white, fontSize: 16),
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.3,
+                  ),
                 ),
               ],
             ),
@@ -479,11 +772,23 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
             // Loading indicator
             if (_isPageLoading)
-              LinearProgressIndicator(
-                value: _loadingProgress > 0 ? _loadingProgress : null,
-                backgroundColor: Colors.grey.shade200,
-                color: const Color(0xFF1565C0),
-                minHeight: 3,
+              Container(
+                height: 3,
+                decoration: BoxDecoration(
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF1565C0).withOpacity(0.3),
+                      blurRadius: 4,
+                      offset: const Offset(0, 1),
+                    ),
+                  ],
+                ),
+                child: LinearProgressIndicator(
+                  value: _loadingProgress > 0 ? _loadingProgress : null,
+                  backgroundColor: Colors.grey.shade100,
+                  color: const Color(0xFF1565C0),
+                  minHeight: 3,
+                ),
               ),
 
             // WebView
@@ -498,70 +803,107 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
   Widget _buildToolbar() {
     return Container(
-      height: 48,
+      height: 52,
       decoration: BoxDecoration(
-        color: const Color(0xFF0D47A1),
+        gradient: const LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [Color(0xFF0D47A1), Color(0xFF1565C0), Color(0xFF0D47A1)],
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
+            color: Colors.black.withOpacity(0.25),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
           ),
         ],
       ),
       child: Row(
         children: [
+          const SizedBox(width: 4),
           // Back button
           if (_canGoBack)
-            IconButton(
-              icon: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
-              onPressed: () => _webController.goBack(),
+            _toolbarButton(
+              icon: Icons.arrow_back_ios_rounded,
+              onTap: () => _webController.goBack(),
               tooltip: 'Kembali',
             ),
 
           // Page title
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
               child: Text(
                 _pageTitle.isNotEmpty ? _pageTitle : _config!.appName,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 14,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.3,
                 ),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
           ),
 
+          // Quiz navigation button
+          _toolbarButton(
+            icon: Icons.grid_view_rounded,
+            onTap: _showQuizNavigation,
+            tooltip: 'Navigasi Soal',
+          ),
+
           // Reload button
           if (_config!.allowReload)
-            IconButton(
-              icon: const Icon(Icons.refresh, color: Colors.white, size: 20),
-              onPressed: () => _webController.reload(),
+            _toolbarButton(
+              icon: Icons.refresh_rounded,
+              onTap: () => _webController.reload(),
               tooltip: 'Muat Ulang',
             ),
 
-          // Lock indicator
+          // Lock indicator badge
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             margin: const EdgeInsets.only(right: 4),
             decoration: BoxDecoration(
-              color: Colors.green.withOpacity(0.3),
-              borderRadius: BorderRadius.circular(12),
+              gradient: LinearGradient(
+                colors: [
+                  Colors.green.shade700.withOpacity(0.5),
+                  Colors.green.shade800.withOpacity(0.4),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.greenAccent.withOpacity(0.3),
+                width: 0.5,
+              ),
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.lock, color: Colors.greenAccent, size: 14),
-                SizedBox(width: 4),
-                Text(
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.greenAccent,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.greenAccent.withOpacity(0.6),
+                        blurRadius: 4,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 5),
+                const Text(
                   'EXAM',
                   style: TextStyle(
                     color: Colors.greenAccent,
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1,
                   ),
                 ),
               ],
@@ -569,14 +911,188 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
           ),
 
           // Exit button
-          IconButton(
-            icon: const Icon(Icons.exit_to_app, color: Colors.white70, size: 20),
-            onPressed: _showExitDialog,
+          _toolbarButton(
+            icon: Icons.power_settings_new_rounded,
+            onTap: _showExitDialog,
             tooltip: 'Keluar',
+            color: Colors.redAccent.shade100,
           ),
+          const SizedBox(width: 4),
         ],
       ),
     );
+  }
+
+  Widget _toolbarButton({
+    required IconData icon,
+    required VoidCallback onTap,
+    required String tooltip,
+    Color color = Colors.white,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        splashColor: Colors.white.withOpacity(0.15),
+        highlightColor: Colors.white.withOpacity(0.08),
+        child: Tooltip(
+          message: tooltip,
+          child: Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            child: Icon(icon, color: color, size: 21),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ==================== QUIZ NAVIGATION PANEL ====================
+
+  void _showQuizNavigation() {
+    _webController.runJavaScript('''
+      (function() {
+        // Remove old panel if exists
+        var old = document.getElementById('csb-nav-overlay');
+        if (old) { old.remove(); }
+        var oldP = document.getElementById('csb-nav-panel');
+        if (oldP) { oldP.remove(); }
+
+        // Find all quiz nav links from Moodle
+        var navLinks = document.querySelectorAll('.qn_buttons a, .navbutton a, #quiz-nav-block a, .mod_quiz-nav-block a');
+        
+        // Fallback: try finding by quiz navigation panel
+        if (navLinks.length === 0) {
+          navLinks = document.querySelectorAll('[id*="quiznavbutton"] a, .quiznavigation a');
+        }
+        // Another fallback
+        if (navLinks.length === 0) {
+          navLinks = document.querySelectorAll('a[href*="attempt.php"][href*="page="]');
+        }
+
+        // Also check for "Finish attempt" link
+        var finishLink = document.querySelector('a[href*="summary.php"], a[href*="processattempt"], input[value*="Selesaikan"], input[value*="Submit"], a.endtestlink');
+
+        if (navLinks.length === 0 && !finishLink) {
+          // No quiz navigation found — notify via a toast
+          var toast = document.createElement('div');
+          toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:12px 24px;border-radius:25px;font-size:14px;z-index:99999;box-shadow:0 4px 15px rgba(0,0,0,0.3);';
+          toast.textContent = 'Navigasi soal tidak ditemukan';
+          document.body.appendChild(toast);
+          setTimeout(function() { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; }, 2000);
+          setTimeout(function() { toast.remove(); }, 2500);
+          return;
+        }
+
+        // Create overlay
+        var overlay = document.createElement('div');
+        overlay.id = 'csb-nav-overlay';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:99998;opacity:0;transition:opacity 0.25s;backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);';
+
+        // Create panel
+        var panel = document.createElement('div');
+        panel.id = 'csb-nav-panel';
+        panel.style.cssText = 'position:fixed;bottom:0;left:50%;transform:translateX(-50%) translateY(100%);width:94%;max-width:420px;max-height:70vh;background:#fff;border-radius:20px 20px 0 0;z-index:99999;box-shadow:0 -8px 30px rgba(0,0,0,0.25);transition:transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);display:flex;flex-direction:column;overflow:hidden;';
+
+        // Handle bar
+        var handle = document.createElement('div');
+        handle.style.cssText = 'width:40px;height:4px;background:#ddd;border-radius:2px;margin:8px auto 0;';
+        panel.appendChild(handle);
+
+        // Header
+        var header = document.createElement('div');
+        header.style.cssText = 'padding:14px 20px 12px;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(135deg,#0D47A1,#1565C0);';
+        var htitle = document.createElement('div');
+        htitle.style.cssText = 'display:flex;align-items:center;gap:8px;';
+        htitle.innerHTML = '<span style="font-size:18px;">\\u2630</span><span style="color:#fff;font-size:16px;font-weight:700;">Navigasi Soal</span>';
+        var hcount = document.createElement('span');
+        hcount.style.cssText = 'color:rgba(255,255,255,0.8);font-size:13px;background:rgba(255,255,255,0.2);padding:3px 10px;border-radius:12px;';
+        hcount.textContent = navLinks.length + ' soal';
+        var closeBtn = document.createElement('button');
+        closeBtn.style.cssText = 'width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,0.2);border:none;color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;';
+        closeBtn.innerHTML = '\\u2715';
+        header.appendChild(htitle);
+        header.appendChild(hcount);
+        header.appendChild(closeBtn);
+        panel.appendChild(header);
+
+        // Grid container
+        var grid = document.createElement('div');
+        grid.style.cssText = 'padding:16px;display:grid;grid-template-columns:repeat(5,1fr);gap:10px;overflow-y:auto;-webkit-overflow-scrolling:touch;flex:1;';
+
+        for (var i = 0; i < navLinks.length; i++) {
+          (function(link, idx) {
+            var btn = document.createElement('div');
+            var num = link.textContent.trim() || (idx + 1);
+            
+            // Detect state from Moodle classes
+            var isCurrentPage = link.classList.contains('thispage') || link.getAttribute('aria-current') === 'true' || link.closest('.thispage');
+            var isAnswered = link.classList.contains('answersaved') || link.classList.contains('complete') || link.querySelector('.answersaved, .complete');
+            var isFlagged = link.classList.contains('flagged') || link.querySelector('.flagged');
+            
+            var bg = '#f5f5f5'; var color = '#666'; var border = '#e0e0e0'; var shadow = 'none';
+            if (isCurrentPage) {
+              bg = 'linear-gradient(135deg,#0D47A1,#1565C0)'; color = '#fff'; border = '#0D47A1'; shadow = '0 3px 10px rgba(13,71,161,0.35)';
+            } else if (isAnswered) {
+              bg = 'linear-gradient(135deg,#e8f5e9,#c8e6c9)'; color = '#2e7d32'; border = '#81c784';
+            }
+            
+            btn.style.cssText = 'width:100%;aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:12px;background:' + bg + ';color:' + color + ';font-size:16px;font-weight:600;cursor:pointer;border:2px solid ' + border + ';box-shadow:' + shadow + ';position:relative;transition:transform 0.15s;';
+            btn.textContent = num;
+            
+            // Flag indicator  
+            if (isFlagged) {
+              var flag = document.createElement('div');
+              flag.style.cssText = 'position:absolute;top:3px;right:3px;width:8px;height:8px;background:#f44336;border-radius:50%;box-shadow:0 0 4px rgba(244,67,54,0.5);';
+              btn.appendChild(flag);
+            }
+
+            btn.addEventListener('click', function() {
+              link.click();
+              doClose();
+            });
+            btn.addEventListener('touchstart', function() { btn.style.transform = 'scale(0.92)'; });
+            btn.addEventListener('touchend', function() { btn.style.transform = 'scale(1)'; });
+            grid.appendChild(btn);
+          })(navLinks[i], i);
+        }
+        panel.appendChild(grid);
+
+        // Finish button if found
+        if (finishLink) {
+          var finishDiv = document.createElement('div');
+          finishDiv.style.cssText = 'padding:12px 16px 16px;border-top:1px solid #f0f0f0;';
+          var finishBtn = document.createElement('div');
+          finishBtn.style.cssText = 'width:100%;padding:14px;background:linear-gradient(135deg,#e53935,#c62828);color:#fff;border-radius:14px;text-align:center;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(229,57,53,0.3);letter-spacing:0.5px;';
+          finishBtn.textContent = 'Selesaikan Kuis';
+          finishBtn.addEventListener('click', function() {
+            if (finishLink.tagName === 'INPUT') { finishLink.click(); }
+            else { finishLink.click(); }
+            doClose();
+          });
+          finishDiv.appendChild(finishBtn);
+          panel.appendChild(finishDiv);
+        }
+
+        document.body.appendChild(overlay);
+        document.body.appendChild(panel);
+
+        requestAnimationFrame(function() {
+          overlay.style.opacity = '1';
+          panel.style.transform = 'translateX(-50%) translateY(0)';
+        });
+
+        function doClose() {
+          overlay.style.opacity = '0';
+          panel.style.transform = 'translateX(-50%) translateY(100%)';
+          setTimeout(function() { overlay.remove(); panel.remove(); }, 300);
+        }
+        overlay.addEventListener('click', doClose);
+        closeBtn.addEventListener('click', doClose);
+      })();
+    ''');
   }
 
   // ==================== BEAUTIFUL ANIMATED DIALOGS ====================
@@ -607,76 +1123,108 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             opacity: anim.value,
             child: Dialog(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-              elevation: 16,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Animated Icon Circle
-                    Container(
-                      width: 72,
-                      height: 72,
-                      decoration: BoxDecoration(
-                        color: iconBgColor,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: iconBgColor.withOpacity(0.3),
-                            blurRadius: 16,
-                            spreadRadius: 2,
+              elevation: 20,
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 360),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  color: Colors.white,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Gradient Icon Circle with glow
+                      Container(
+                        width: 76,
+                        height: 76,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [iconBgColor, iconBgColor.withOpacity(0.7)],
                           ),
-                        ],
-                      ),
-                      child: Icon(icon, color: iconColor, size: 36),
-                    ),
-                    const SizedBox(height: 20),
-                    // Title
-                    Text(
-                      title,
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: titleColor ?? Colors.grey.shade800,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 12),
-                    // Message
-                    Text(
-                      message,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey.shade600,
-                        height: 1.5,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 24),
-                    // Button
-                    SizedBox(
-                      width: double.infinity,
-                      height: 48,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: buttonColor,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          elevation: 2,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: iconBgColor.withOpacity(0.4),
+                              blurRadius: 20,
+                              spreadRadius: 3,
+                            ),
+                          ],
                         ),
-                        onPressed: () => Navigator.pop(ctx),
+                        child: Icon(icon, color: iconColor, size: 38),
+                      ),
+                      const SizedBox(height: 20),
+                      // Title
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: titleColor ?? Colors.grey.shade800,
+                          letterSpacing: 0.3,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 10),
+                      // Decorative line
+                      Container(
+                        width: 36,
+                        height: 3,
+                        decoration: BoxDecoration(
+                          color: buttonColor.withOpacity(0.3),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      // Message in subtle container
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         child: Text(
-                          buttonText,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
+                          message,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade600,
+                            height: 1.5,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      // Button with gradient effect
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: buttonColor,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            elevation: 4,
+                            shadowColor: buttonColor.withOpacity(0.4),
+                          ),
+                          onPressed: () => Navigator.pop(ctx),
+                          child: Text(
+                            buttonText,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.5,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -713,107 +1261,137 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             opacity: anim.value,
             child: Dialog(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-              elevation: 16,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Icon Circle
-                    Container(
-                      width: 72,
-                      height: 72,
-                      decoration: BoxDecoration(
-                        color: iconBgColor,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: iconBgColor.withOpacity(0.3),
-                            blurRadius: 16,
-                            spreadRadius: 2,
+              elevation: 20,
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 360),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  color: Colors.white,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Gradient Icon Circle with glow
+                      Container(
+                        width: 76,
+                        height: 76,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [iconBgColor, iconBgColor.withOpacity(0.7)],
+                          ),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: iconBgColor.withOpacity(0.4),
+                              blurRadius: 20,
+                              spreadRadius: 3,
+                            ),
+                          ],
+                        ),
+                        child: Icon(icon, color: iconColor, size: 38),
+                      ),
+                      const SizedBox(height: 20),
+                      // Title
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.grey.shade800,
+                          letterSpacing: 0.3,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 36,
+                        height: 3,
+                        decoration: BoxDecoration(
+                          color: confirmColor.withOpacity(0.3),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      // Message in subtle container
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          message,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade600,
+                            height: 1.5,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      // Buttons Row
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SizedBox(
+                              height: 50,
+                              child: OutlinedButton(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.grey.shade600,
+                                  side: BorderSide(color: Colors.grey.shade300),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                onPressed: () => Navigator.pop(ctx),
+                                child: Text(
+                                  cancelText,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: SizedBox(
+                              height: 50,
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: confirmColor,
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  elevation: 4,
+                                  shadowColor: confirmColor.withOpacity(0.4),
+                                ),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  onConfirm();
+                                },
+                                child: Text(
+                                  confirmText,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
                           ),
                         ],
                       ),
-                      child: Icon(icon, color: iconColor, size: 36),
-                    ),
-                    const SizedBox(height: 20),
-                    // Title
-                    Text(
-                      title,
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.grey.shade800,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 12),
-                    // Message
-                    Text(
-                      message,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey.shade600,
-                        height: 1.5,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 24),
-                    // Buttons Row
-                    Row(
-                      children: [
-                        Expanded(
-                          child: SizedBox(
-                            height: 48,
-                            child: OutlinedButton(
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: Colors.grey.shade600,
-                                side: BorderSide(color: Colors.grey.shade300),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                              ),
-                              onPressed: () => Navigator.pop(ctx),
-                              child: Text(
-                                cancelText,
-                                style: const TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: SizedBox(
-                            height: 48,
-                            child: ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: confirmColor,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                                elevation: 2,
-                              ),
-                              onPressed: () {
-                                Navigator.pop(ctx);
-                                onConfirm();
-                              },
-                              child: Text(
-                                confirmText,
-                                style: const TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),

@@ -49,6 +49,19 @@ class ExamConfig {
     this.updatedAt,
   });
 
+  /// Mobile User-Agent constant - always used regardless of server config
+  static const String mobileUserAgent = 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 SEB/3.0 ExaManmet/1.0';
+
+  /// Ensure User-Agent always has mobile identifiers for responsive layout
+  static String _ensureMobileUA(String? ua) {
+    if (ua == null || ua.isEmpty) return mobileUserAgent;
+    // If server UA doesn't contain Mobile browser prefix, use our mobile UA
+    if (!ua.contains('Mozilla/5.0') || !ua.contains('Mobile')) {
+      return mobileUserAgent;
+    }
+    return ua;
+  }
+
   /// Create from API JSON response
   factory ExamConfig.fromJson(Map<String, dynamic> json) {
     return ExamConfig(
@@ -56,7 +69,7 @@ class ExamConfig {
       schoolName: json['school_name'] ?? '',
       logoUrl: json['logo_url'],
       moodleUrl: json['moodle_url'] ?? 'https://elearning.man1metro.sch.id',
-      userAgent: json['user_agent'] ?? 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 SEB/3.0 ExaManmet/1.0',
+      userAgent: _ensureMobileUA(json['user_agent']),
       appPassword: json['app_password'],
       exitPassword: json['exit_password'],
       sebConfigKey: json['seb_config_key'],
@@ -136,7 +149,7 @@ class ExamConfig {
       appName: 'ExaManmet',
       schoolName: 'MAN 1 Metro',
       moodleUrl: 'https://elearning.man1metro.sch.id',
-      userAgent: 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 SEB/3.0 ExaManmet/1.0',
+      userAgent: mobileUserAgent,
     );
   }
 }
