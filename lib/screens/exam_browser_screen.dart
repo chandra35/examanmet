@@ -35,9 +35,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   Timer? _configRefreshTimer;
   Timer? _notifCheckTimer;
   Timer? _securityAuditTimer;
+  Timer? _bluetoothCheckTimer;
+  Timer? _headsetCheckTimer;
   int _violationCount = 0;
   static const int _maxViolations = 5;
   bool _securityWarningShown = false;
+  bool _bluetoothWarningShown = false;
+  bool _headsetWarningShown = false;
+  bool _rootWarningShown = false;
 
   @override
   void initState() {
@@ -55,7 +60,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     _configRefreshTimer?.cancel();
     _notifCheckTimer?.cancel();
     _securityAuditTimer?.cancel();
+    _bluetoothCheckTimer?.cancel();
+    _headsetCheckTimer?.cancel();
     _lockdownService.onSecurityEvent = null;
+    _lockdownService.stopAlertSound();
     _lockdownService.disableLockdown();
     WakelockPlus.disable();
     super.dispose();
@@ -147,6 +155,31 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     );
     // Run initial audit after short delay
     Future.delayed(const Duration(seconds: 2), _performSecurityAudit);
+
+    // Bluetooth detection timer (every 8 seconds)
+    if (config.detectBluetooth && Platform.isAndroid) {
+      _bluetoothCheckTimer = Timer.periodic(
+        const Duration(seconds: 8),
+        (_) => _checkBluetooth(),
+      );
+      // Check immediately after 3 seconds
+      Future.delayed(const Duration(seconds: 3), _checkBluetooth);
+    }
+
+    // Headset detection timer (every 5 seconds)
+    if (config.detectHeadset && Platform.isAndroid) {
+      _headsetCheckTimer = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => _checkHeadset(),
+      );
+      // Check immediately after 3 seconds
+      Future.delayed(const Duration(seconds: 3), _checkHeadset);
+    }
+
+    // Root detection (check once at init)
+    if (config.detectRoot && Platform.isAndroid) {
+      Future.delayed(const Duration(seconds: 2), _checkRoot);
+    }
 
     setState(() => _isLoading = false);
   }
@@ -549,6 +582,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   void _showViolationWarning() {
     if (!mounted) return;
 
+    // Play alert sound on violation
+    if (_config?.alertSoundOnViolation == true) {
+      _lockdownService.playAlertSound();
+    }
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
 
@@ -612,6 +650,24 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Increment violation for critical events
     if (event == 'home_pressed' || event == 'recent_pressed' || event == 'multi_window_detected') {
       _violationCount++;
+      // Play alert sound on violation
+      if (_config?.alertSoundOnViolation == true) {
+        _lockdownService.playAlertSound();
+      }
+    }
+
+    // Handle Bluetooth events in real-time
+    if (event == 'bluetooth_turned_on' || event.startsWith('bluetooth_device_connected')) {
+      if (_config?.detectBluetooth == true) {
+        _showBluetoothWarning();
+      }
+    }
+
+    // Handle headset events in real-time
+    if (event.startsWith('headset_connected')) {
+      if (_config?.detectHeadset == true) {
+        _showHeadsetWarning();
+      }
     }
   }
 
@@ -666,6 +722,133 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       buttonText: 'OK',
       buttonColor: Colors.red.shade400,
     );
+  }
+
+  // ==================== Bluetooth Detection ====================
+
+  Future<void> _checkBluetooth() async {
+    if (!mounted || _config == null || !_config!.detectBluetooth) return;
+
+    final btStatus = await _lockdownService.checkBluetooth();
+    if (!mounted) return;
+
+    if (btStatus.enabled && !_bluetoothWarningShown) {
+      _showBluetoothWarning(devices: btStatus.connectedDevices);
+    }
+  }
+
+  void _showBluetoothWarning({List<String> devices = const []}) {
+    if (_bluetoothWarningShown) return;
+    _bluetoothWarningShown = true;
+
+    // Play alert sound
+    if (_config?.alertSoundOnViolation == true) {
+      _lockdownService.playAlertSound();
+    }
+
+    final deviceInfo = devices.isNotEmpty
+        ? '\n\nPerangkat terdeteksi:\n${devices.map((d) => '• $d').join('\n')}'
+        : '';
+
+    _showAnimatedDialog(
+      icon: Icons.bluetooth_rounded,
+      iconColor: Colors.white,
+      iconBgColor: Colors.blue.shade700,
+      title: 'BLUETOOTH TERDETEKSI!',
+      titleColor: Colors.blue.shade700,
+      message:
+          'Bluetooth pada perangkat Anda dalam keadaan AKTIF!$deviceInfo\n\n'
+          'Penggunaan earpiece/headset Bluetooth saat ujian '
+          'dianggap sebagai KECURANGAN.\n\n'
+          'Segera matikan Bluetooth Anda!\n'
+          'Tindakan ini dicatat dan dilaporkan ke pengawas.',
+      buttonText: 'Saya Mengerti',
+      buttonColor: Colors.blue.shade700,
+    );
+
+    // Reset warning flag after 30 seconds
+    Future.delayed(const Duration(seconds: 30), () {
+      _bluetoothWarningShown = false;
+    });
+  }
+
+  // ==================== Headset Detection ====================
+
+  Future<void> _checkHeadset() async {
+    if (!mounted || _config == null || !_config!.detectHeadset) return;
+
+    final connected = await _lockdownService.isHeadsetConnected();
+    if (!mounted) return;
+
+    if (connected && !_headsetWarningShown) {
+      _showHeadsetWarning();
+    }
+  }
+
+  void _showHeadsetWarning() {
+    if (_headsetWarningShown) return;
+    _headsetWarningShown = true;
+
+    // Play alert sound
+    if (_config?.alertSoundOnViolation == true) {
+      _lockdownService.playAlertSound();
+    }
+
+    _showAnimatedDialog(
+      icon: Icons.headset_rounded,
+      iconColor: Colors.white,
+      iconBgColor: Colors.purple.shade700,
+      title: 'HEADSET TERDETEKSI!',
+      titleColor: Colors.purple.shade700,
+      message:
+          'Terdeteksi headset/earphone terhubung ke perangkat Anda!\n\n'
+          'Penggunaan headset/earphone saat ujian berlangsung '
+          'TIDAK DIPERBOLEHKAN.\n\n'
+          'Segera cabut/lepaskan headset Anda!\n'
+          'Tindakan ini dicatat dan dilaporkan ke pengawas.',
+      buttonText: 'Saya Mengerti',
+      buttonColor: Colors.purple.shade700,
+    );
+
+    // Reset warning flag after 20 seconds
+    Future.delayed(const Duration(seconds: 20), () {
+      _headsetWarningShown = false;
+    });
+  }
+
+  // ==================== Root Detection ====================
+
+  Future<void> _checkRoot() async {
+    if (!mounted || _config == null || !_config!.detectRoot) return;
+
+    final rooted = await _lockdownService.isDeviceRooted();
+    if (!mounted) return;
+
+    if (rooted && !_rootWarningShown) {
+      _rootWarningShown = true;
+
+      // Play alert sound for rooted device
+      if (_config?.alertSoundOnViolation == true) {
+        _lockdownService.playAlertSound();
+      }
+
+      _showAnimatedDialog(
+        icon: Icons.warning_rounded,
+        iconColor: Colors.white,
+        iconBgColor: Colors.red.shade900,
+        title: 'PERANGKAT DI-ROOT!',
+        titleColor: Colors.red.shade900,
+        message:
+            'Perangkat Anda terdeteksi telah di-ROOT!\n\n'
+            'Perangkat yang di-root dapat membypass keamanan ujian '
+            'dan dianggap sebagai ancaman serius.\n\n'
+            'Informasi ini telah dicatat dan akan dilaporkan '
+            'ke pengawas ujian.\n\n'
+            'Gunakan perangkat yang tidak di-root untuk ujian.',
+        buttonText: 'Saya Mengerti',
+        buttonColor: Colors.red.shade900,
+      );
+    }
   }
 
   void _showExitDialog() async {
@@ -765,7 +948,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         }
       },
       child: Scaffold(
-        body: Column(
+        body: SafeArea(
+          bottom: false,
+          child: Column(
           children: [
             // Toolbar (if enabled)
             if (_config!.showToolbar) _buildToolbar(),
@@ -796,6 +981,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               child: WebViewWidget(controller: _webController),
             ),
           ],
+        ),
         ),
       ),
     );

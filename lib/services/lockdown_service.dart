@@ -100,6 +100,12 @@ class LockdownService {
       isMultiWindow: audit['is_multi_window'] == true,
       hasOverlayPermission: audit['overlay_permission'] == true,
       isInPiP: audit['is_in_picture_in_picture'] == true,
+      isRooted: audit['is_rooted'] == true,
+      bluetoothEnabled: audit['bluetooth_enabled'] == true,
+      bluetoothDevices: audit['bluetooth_connected_devices'] != null
+          ? List<String>.from(audit['bluetooth_connected_devices'])
+          : [],
+      headsetConnected: audit['headset_connected'] == true,
     );
   }
 
@@ -196,10 +202,93 @@ class LockdownService {
     return [];
   }
 
-  /// Disable clipboard if configured
+  /// Disable clipboard if configured — uses native method to avoid Android 13+ toast
   Future<void> disableClipboard() async {
     if (_config != null && !_config!.allowClipboard) {
-      await Clipboard.setData(const ClipboardData(text: ''));
+      try {
+        if (Platform.isAndroid) {
+          await _channel.invokeMethod('clearClipboard');
+        } else {
+          await Clipboard.setData(const ClipboardData(text: ''));
+        }
+      } catch (e) {
+        debugPrint('Failed to clear clipboard: $e');
+      }
+    }
+  }
+
+  // ==================== Bluetooth Detection ====================
+
+  /// Check Bluetooth status and connected devices
+  Future<BluetoothStatus> checkBluetooth() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('checkBluetooth');
+        final map = Map<String, dynamic>.from(result ?? {});
+        return BluetoothStatus(
+          enabled: map['enabled'] == true,
+          connectedDevices: map['connected_devices'] != null
+              ? List<String>.from(map['connected_devices'])
+              : [],
+        );
+      }
+    } catch (e) {
+      debugPrint('Failed to check Bluetooth: $e');
+    }
+    return BluetoothStatus(enabled: false, connectedDevices: []);
+  }
+
+  // ==================== Headset Detection ====================
+
+  /// Check if headset/earphone is connected
+  Future<bool> isHeadsetConnected() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('checkHeadset');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to check headset: $e');
+    }
+    return false;
+  }
+
+  // ==================== Root Detection ====================
+
+  /// Check if device is rooted
+  Future<bool> isDeviceRooted() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('checkRoot');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to check root: $e');
+    }
+    return false;
+  }
+
+  // ==================== Alert Sound ====================
+
+  /// Play alert sound for security violations
+  Future<void> playAlertSound() async {
+    try {
+      if (Platform.isAndroid) {
+        await _channel.invokeMethod('playAlertSound');
+      }
+    } catch (e) {
+      debugPrint('Failed to play alert sound: $e');
+    }
+  }
+
+  /// Stop alert sound
+  Future<void> stopAlertSound() async {
+    try {
+      if (Platform.isAndroid) {
+        await _channel.invokeMethod('stopAlertSound');
+      }
+    } catch (e) {
+      debugPrint('Failed to stop alert sound: $e');
     }
   }
 }
@@ -212,6 +301,10 @@ class SecurityAuditResult {
   final bool isMultiWindow;
   final bool hasOverlayPermission;
   final bool isInPiP;
+  final bool isRooted;
+  final bool bluetoothEnabled;
+  final List<String> bluetoothDevices;
+  final bool headsetConnected;
 
   SecurityAuditResult({
     required this.developerOptionsEnabled,
@@ -220,6 +313,10 @@ class SecurityAuditResult {
     required this.isMultiWindow,
     required this.hasOverlayPermission,
     required this.isInPiP,
+    this.isRooted = false,
+    this.bluetoothEnabled = false,
+    this.bluetoothDevices = const [],
+    this.headsetConnected = false,
   });
 
   /// Whether any security threat is detected
@@ -229,7 +326,10 @@ class SecurityAuditResult {
       accessibilityServices.isNotEmpty ||
       isMultiWindow ||
       hasOverlayPermission ||
-      isInPiP;
+      isInPiP ||
+      isRooted ||
+      bluetoothEnabled ||
+      headsetConnected;
 
   /// Get human-readable list of threats
   List<String> get threatDescriptions {
@@ -242,6 +342,24 @@ class SecurityAuditResult {
     if (isMultiWindow) threats.add('Mode Split Screen terdeteksi');
     if (hasOverlayPermission) threats.add('Izin Overlay aktif');
     if (isInPiP) threats.add('Picture-in-Picture terdeteksi');
+    if (isRooted) threats.add('Perangkat di-ROOT (keamanan terancam)');
+    if (bluetoothEnabled) {
+      threats.add('Bluetooth aktif${bluetoothDevices.isNotEmpty ? ": ${bluetoothDevices.join(', ')}" : ""}');
+    }
+    if (headsetConnected) threats.add('Headset/Earphone terdeteksi');
     return threats;
   }
+}
+
+/// Bluetooth connection status
+class BluetoothStatus {
+  final bool enabled;
+  final List<String> connectedDevices;
+
+  BluetoothStatus({
+    required this.enabled,
+    required this.connectedDevices,
+  });
+
+  bool get hasConnectedDevices => connectedDevices.isNotEmpty;
 }

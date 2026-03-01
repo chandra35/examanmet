@@ -15,6 +15,10 @@ class ExamConfig {
   final bool allowNavigation;
   final bool allowReload;
   final bool showToolbar;
+  final bool detectBluetooth;
+  final bool detectHeadset;
+  final bool detectRoot;
+  final bool alertSoundOnViolation;
   final List<String> allowedUrls;
   final List<String> blockedApps;
   final String? customCss;
@@ -39,6 +43,10 @@ class ExamConfig {
     this.allowNavigation = false,
     this.allowReload = true,
     this.showToolbar = true,
+    this.detectBluetooth = true,
+    this.detectHeadset = true,
+    this.detectRoot = true,
+    this.alertSoundOnViolation = true,
     this.allowedUrls = const [],
     this.blockedApps = const [],
     this.customCss,
@@ -79,6 +87,10 @@ class ExamConfig {
       allowNavigation: json['allow_navigation'] ?? false,
       allowReload: json['allow_reload'] ?? true,
       showToolbar: json['show_toolbar'] ?? true,
+      detectBluetooth: json['detect_bluetooth'] ?? true,
+      detectHeadset: json['detect_headset'] ?? true,
+      detectRoot: json['detect_root'] ?? true,
+      alertSoundOnViolation: json['alert_sound_on_violation'] ?? true,
       allowedUrls: json['allowed_urls'] != null
           ? List<String>.from(json['allowed_urls'])
           : [],
@@ -111,6 +123,10 @@ class ExamConfig {
       'allow_navigation': allowNavigation,
       'allow_reload': allowReload,
       'show_toolbar': showToolbar,
+      'detect_bluetooth': detectBluetooth,
+      'detect_headset': detectHeadset,
+      'detect_root': detectRoot,
+      'alert_sound_on_violation': alertSoundOnViolation,
       'allowed_urls': allowedUrls,
       'blocked_apps': blockedApps,
       'custom_css': customCss,

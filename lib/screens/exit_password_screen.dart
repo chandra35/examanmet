@@ -351,18 +351,12 @@ class _ExitPasswordScreenState extends State<ExitPasswordScreen>
                                                     borderRadius: BorderRadius.circular(14),
                                                   ),
                                                 ),
-                                                child: const Row(
-                                                  mainAxisAlignment: MainAxisAlignment.center,
-                                                  children: [
-                                                    Icon(Icons.arrow_back_rounded, size: 18),
-                                                    SizedBox(width: 6),
-                                                    Text(
-                                                      'Kembali',
-                                                      style: TextStyle(
-                                                        fontSize: 14, fontWeight: FontWeight.w500,
-                                                      ),
-                                                    ),
-                                                  ],
+                                                child: const Text(
+                                                  'Kembali',
+                                                  style: TextStyle(
+                                                    fontSize: 14, fontWeight: FontWeight.w500,
+                                                  ),
+                                                  overflow: TextOverflow.ellipsis,
                                                 ),
                                               ),
                                             ),
@@ -392,20 +386,14 @@ class _ExitPasswordScreenState extends State<ExitPasswordScreen>
                                                           color: Colors.white,
                                                         ),
                                                       )
-                                                    : const Row(
-                                                        mainAxisAlignment: MainAxisAlignment.center,
-                                                        children: [
-                                                          Icon(Icons.exit_to_app_rounded, size: 18),
-                                                          SizedBox(width: 6),
-                                                          Text(
-                                                            'KELUAR',
-                                                            style: TextStyle(
-                                                              fontSize: 14,
-                                                              fontWeight: FontWeight.bold,
-                                                              letterSpacing: 0.8,
-                                                            ),
-                                                          ),
-                                                        ],
+                                                    : const Text(
+                                                        'KELUAR',
+                                                        style: TextStyle(
+                                                          fontSize: 14,
+                                                          fontWeight: FontWeight.bold,
+                                                          letterSpacing: 0.8,
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
                                                       ),
                                               ),
                                             ),
