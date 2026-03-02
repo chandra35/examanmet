@@ -12,6 +12,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
   final notifService = NotificationService();
   await notifService.initialize();
+  // handleFcmMessage + _handleLockCommand will persist lock state to
+  // SharedPreferences even from background — heartbeat picks it up on resume.
   await notifService.handleFcmMessage(message);
 }
 

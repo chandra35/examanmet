@@ -130,16 +130,54 @@ class NotificationService {
       final isLocked = data['is_locked'] == '1';
       final reason = data['lock_reason'] as String?;
       debugPrint('[FCM] Lock command: session=$sessionId locked=$isLocked reason=$reason');
+
+      // Always persist to SharedPreferences so background handler can save state
+      _persistLockState(sessionId, isLocked, reason);
+
+      // If callback is set (foreground), call it directly for instant UI update
       onLockCommandReceived?.call(sessionId, isLocked, reason);
       return true;
     }
     return false;
   }
 
+  /// Persist lock state from FCM to SharedPreferences.
+  /// This ensures background-delivered FCM lock commands survive
+  /// and can be picked up when app resumes or heartbeat fires.
+  Future<void> _persistLockState(String sessionId, bool isLocked, String? reason) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('fcm_pending_lock', '$sessionId|${isLocked ? '1' : '0'}|${reason ?? ''}');
+    } catch (_) {}
+  }
+
+  /// Check if there is a pending lock state from background FCM.
+  /// Returns null if no pending state. Clears after reading.
+  static Future<({String sessionId, bool isLocked, String? reason})?> consumePendingLockState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('fcm_pending_lock');
+      if (raw == null) return null;
+      await prefs.remove('fcm_pending_lock');
+      final parts = raw.split('|');
+      if (parts.length < 2) return null;
+      return (
+        sessionId: parts[0],
+        isLocked: parts[1] == '1',
+        reason: parts.length > 2 && parts[2].isNotEmpty ? parts[2] : null,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Handle an incoming FCM message — called from foreground listener
   /// and from the background handler in main.dart.
   Future<void> handleFcmMessage(RemoteMessage message) async {
     if (!_initialized) await initialize();
+
+    // Handle lock/unlock commands — persists to SharedPreferences even from background
+    if (_handleLockCommand(message.data)) return;
 
     final data = message.data;
     final notifId = data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString();

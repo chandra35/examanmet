@@ -5,6 +5,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'notification_service.dart';
 
 /// Service to manage exam session, heartbeat, and violation reporting
 /// to the simansav3 backend.
@@ -112,11 +113,11 @@ class ExamSessionService {
     _moodleFullname = fullname;
   }
 
-  /// Start heartbeat timer (every 30 seconds)
+  /// Start heartbeat timer (every 10 seconds for near-real-time lock/unlock)
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(
-      const Duration(seconds: 30),
+      const Duration(seconds: 10),
       (_) => _sendHeartbeat(),
     );
   }
@@ -124,6 +125,19 @@ class ExamSessionService {
   /// Send heartbeat to server
   Future<void> _sendHeartbeat() async {
     if (_sessionId == null) return;
+
+    // Check for pending lock state from background FCM delivery
+    final pendingLock = await NotificationService.consumePendingLockState();
+    if (pendingLock != null) {
+      final myId = _sessionId.toString();
+      if (pendingLock.sessionId == myId || pendingLock.sessionId.isEmpty) {
+        if (pendingLock.isLocked != _isLocked) {
+          _isLocked = pendingLock.isLocked;
+          _lockReason = pendingLock.reason;
+          onLockStatusChanged?.call(_isLocked, _lockReason);
+        }
+      }
+    }
 
     try {
       final baseUrl = await _getBaseUrl();
