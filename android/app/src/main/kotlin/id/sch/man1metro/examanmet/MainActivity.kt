@@ -188,6 +188,10 @@ class MainActivity : FlutterActivity() {
                         isLockdownActive = true
                         runOnUiThread {
                             hideSystemUI()
+                            // Start screen pinning ONCE — user sees 1 dialog then app is locked
+                            try {
+                                startLockTask()
+                            } catch (_: Exception) {}
                         }
                         handler.post(immersiveRunnable)
                         handler.post(securityAuditRunnable)
@@ -202,7 +206,11 @@ class MainActivity : FlutterActivity() {
                         isLockdownActive = false
                         handler.removeCallbacks(immersiveRunnable)
                         handler.removeCallbacks(securityAuditRunnable)
+                        handler.removeCallbacks(bringToFrontRunnable)
                         runOnUiThread {
+                            try {
+                                stopLockTask()
+                            } catch (_: Exception) {}
                             showSystemUI()
                         }
                         result.success(true)
@@ -633,16 +641,36 @@ class MainActivity : FlutterActivity() {
 
     /**
      * When app is paused (user somehow left), aggressively bring it back to front.
+     * Uses multiple retries with short intervals to ensure app returns quickly.
      */
     override fun onPause() {
         super.onPause()
         if (isLockdownActive) {
-            // Schedule bring-to-front after a short delay
-            handler.postDelayed({
-                if (isLockdownActive) {
-                    bringAppToFront()
-                }
-            }, 300)
+            // Aggressive multi-retry bring-to-front
+            handler.removeCallbacks(bringToFrontRunnable)
+            handler.postDelayed(bringToFrontRunnable, 100)
+        }
+    }
+
+    /**
+     * Runnable that aggressively brings app to front with retries.
+     */
+    private val bringToFrontRunnable = object : Runnable {
+        private var retryCount = 0
+        override fun run() {
+            if (!isLockdownActive) {
+                retryCount = 0
+                return
+            }
+            bringAppToFront()
+            hideSystemUI()
+            retryCount++
+            // Retry up to 5 times with 200ms intervals
+            if (retryCount < 5) {
+                handler.postDelayed(this, 200)
+            } else {
+                retryCount = 0
+            }
         }
     }
 
@@ -653,6 +681,13 @@ class MainActivity : FlutterActivity() {
         super.onStop()
         if (isLockdownActive) {
             bringAppToFront()
+            // Schedule additional retries in case first attempt fails
+            handler.postDelayed({
+                if (isLockdownActive) bringAppToFront()
+            }, 150)
+            handler.postDelayed({
+                if (isLockdownActive) bringAppToFront()
+            }, 400)
         }
     }
 
