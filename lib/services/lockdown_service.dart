@@ -325,11 +325,8 @@ class SecurityAuditResult {
       usbDebuggingEnabled ||
       accessibilityServices.isNotEmpty ||
       isMultiWindow ||
-      hasOverlayPermission ||
       isInPiP ||
-      isRooted ||
-      bluetoothEnabled ||
-      headsetConnected;
+      isRooted;
 
   /// Get human-readable list of threats
   List<String> get threatDescriptions {
@@ -340,13 +337,8 @@ class SecurityAuditResult {
       threats.add('Accessibility Service mencurigakan: ${accessibilityServices.join(", ")}');
     }
     if (isMultiWindow) threats.add('Mode Split Screen terdeteksi');
-    if (hasOverlayPermission) threats.add('Izin Overlay aktif');
     if (isInPiP) threats.add('Picture-in-Picture terdeteksi');
     if (isRooted) threats.add('Perangkat di-ROOT (keamanan terancam)');
-    if (bluetoothEnabled) {
-      threats.add('Bluetooth aktif${bluetoothDevices.isNotEmpty ? ": ${bluetoothDevices.join(', ')}" : ""}');
-    }
-    if (headsetConnected) threats.add('Headset/Earphone terdeteksi');
     return threats;
   }
 }

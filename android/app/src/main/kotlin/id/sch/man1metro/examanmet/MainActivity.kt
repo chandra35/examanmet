@@ -594,11 +594,50 @@ class MainActivity : FlutterActivity() {
             val enabledServices = am.getEnabledAccessibilityServiceList(
                 AccessibilityServiceInfo.FEEDBACK_ALL_MASK
             )
-            // Whitelist system services, flag third-party ones
+            // Whitelist known OEM/system accessibility services (NOT cheating tools)
             val systemPackages = setOf(
-                "com.google.android.marvin.talkback",  // TalkBack (accessibility)
-                "com.samsung.accessibility",            // Samsung accessibility
-                "com.android.systemui",                 // System UI
+                // Google
+                "com.google.android.marvin.talkback",      // TalkBack
+                "com.google.android.accessibility",        // Google Accessibility Suite
+                "com.google.android.apps.accessibility",   // Google accessibility tools
+                // Samsung
+                "com.samsung.accessibility",               // Samsung accessibility
+                "com.samsung.android.accessibility.talkback", // Samsung TalkBack
+                "com.samsung.android.visionintelligence",  // Samsung Vision
+                "com.samsung.android.bixby",               // Bixby
+                // Android System
+                "com.android.systemui",                    // System UI
+                "com.android.server.accessibility",        // System accessibility
+                // Transsion (itel, Tecno, Infinix)
+                "com.transsion.mol",                       // Transsion MOL system service
+                "com.transsion.hilauncher",                // HiLauncher
+                "com.transsion.languagepackage",           // Language pack
+                "com.transsion.assistant",                 // Transsion assistant
+                "com.transsion.remotehelp",                // Remote help
+                // Xiaomi / Redmi / POCO
+                "com.miui.accessibility",                  // MIUI accessibility
+                "com.miui.contentcatcher",                 // MIUI content catcher
+                "com.miui.voiceassist",                    // Mi Voice
+                "com.xiaomi.accessibility",                // Xiaomi accessibility
+                // Oppo / Realme / OnePlus (ColorOS)
+                "com.coloros.accessibility",               // ColorOS
+                "com.oplus.accessibility",                 // Oplus accessibility
+                "com.oppo.accessibility",                  // Oppo accessibility
+                "com.heytap.accessibilityservice",         // HeyTap
+                // Vivo (FuntouchOS / OriginOS)
+                "com.vivo.accessibility",                  // Vivo accessibility
+                "com.vivo.assistant",                      // Vivo assistant
+                // Huawei / Honor (HarmonyOS / EMUI)
+                "com.huawei.accessibility",                // Huawei accessibility
+                "com.huawei.bone",                         // Huawei AI
+                // Other system services
+                "com.motorola.accessibility",              // Motorola
+                "com.lge.accessibility",                   // LG
+                "com.sec.android.app.servicemodeapp",      // Samsung service mode
+                // Common non-cheating services
+                "eu.thedarken.sdm",                        // SD Maid
+                "com.touchtype.swiftkey",                  // SwiftKey keyboard accessibility
+                "org.mozilla.firefox",                     // Firefox accessibility
             )
             for (service in enabledServices) {
                 val packageName = service.resolveInfo?.serviceInfo?.packageName ?: continue
@@ -670,10 +709,66 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /**
+     * Check if any non-system app is actively using overlay.
+     * Uses AppOpsManager on API 26+ for accurate detection.
+     * Does NOT flag just having the permission — only active usage.
+     */
     private fun checkOverlayApps(): Boolean {
         return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                Settings.canDrawOverlays(this)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // Check if any non-system app is actively drawing overlays
+                val appOps = getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+                val pm = packageManager
+                val packages = pm.getInstalledPackages(0)
+                // Known safe OEM overlay packages
+                val safeOverlayPackages = setOf(
+                    "com.android.systemui",
+                    "com.google.android.inputmethod.latin",
+                    "com.google.android.gms",
+                    "com.google.android.projection.gearhead",
+                    // Transsion (itel/Tecno/Infinix)
+                    "com.transsion.mol",
+                    "com.transsion.hilauncher",
+                    "com.transsion.toolbox",
+                    // Samsung
+                    "com.samsung.android.app.smartcapture",
+                    "com.samsung.android.game.gametools", 
+                    "com.samsung.android.smartface",
+                    // Xiaomi
+                    "com.miui.securitycenter",
+                    "com.miui.home",
+                    // Oppo/Realme
+                    "com.coloros.gamespace",
+                    "com.oplus.gamespace",
+                    // Vivo
+                    "com.vivo.smartshot",
+                )
+                for (pkg in packages) {
+                    val pkgName = pkg.packageName ?: continue
+                    if (safeOverlayPackages.contains(pkgName)) continue
+                    // Skip system apps  
+                    if (pkg.applicationInfo?.flags?.and(android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0) continue
+                    try {
+                        val mode = appOps.unsafeCheckOpNoThrow(
+                            android.app.AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+                            pkg.applicationInfo?.uid ?: continue,
+                            pkgName
+                        )
+                        if (mode == android.app.AppOpsManager.MODE_ALLOWED) {
+                            // Only flag if it's a known cheating overlay app
+                            val suspiciousOverlays = setOf(
+                                "com.lwi.android.flapps", // Floating Apps
+                                "com.floatingwindow", 
+                                "com.lwi.android.flapps.trial",
+                                "com.overlaymanager",
+                                "com.xda.overlays",
+                            )
+                            if (suspiciousOverlays.contains(pkgName)) return true
+                        }
+                    } catch (_: Exception) {}
+                }
+                false
             } else {
                 false
             }

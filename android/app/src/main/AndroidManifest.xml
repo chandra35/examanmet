@@ -31,7 +31,7 @@
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize"
             android:screenOrientation="portrait"
-            android:lockTaskMode="if_whitelisted"
+            android:lockTaskMode="normal"
             android:excludeFromRecents="true"
             android:showOnLockScreen="true"
             android:showWhenLocked="true"
