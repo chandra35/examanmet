@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../services/config_service.dart';
+import '../services/lockdown_service.dart';
 import '../models/exam_config.dart';
 
 /// Boot line entry for the terminal animation.
@@ -22,6 +24,7 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen> {
   final ConfigService _configService = ConfigService();
+  final LockdownService _lockdownService = LockdownService();
   final ScrollController _scrollController = ScrollController();
   final List<_BootLine> _displayedLines = [];
   Timer? _cursorTimer;
@@ -168,6 +171,24 @@ class _SplashScreenState extends State<SplashScreen> {
     // Phase 3: Config loaded, continue boot success sequence
     for (final line in _bootSuccessEnd) {
       await _addLine(line);
+    }
+
+    // Check overlay permission (needed for status bar blocker)
+    if (Platform.isAndroid) {
+      final hasOverlay = await _lockdownService.hasOverlayPermission();
+      if (!hasOverlay) {
+        await _addLine(_BootLine('  [ WARN ] Overlay permission not granted', color: _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
+        await _addLine(_BootLine('  Requesting overlay permission...', color: _dimWhite, delay: Duration(milliseconds: 80)));
+        await _lockdownService.requestOverlayPermission();
+        // Wait for user to come back and grant permission
+        await Future.delayed(const Duration(seconds: 3));
+        final granted = await _lockdownService.hasOverlayPermission();
+        if (granted) {
+          await _addLine(_BootLine('  [  OK  ] Overlay permission granted', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+        } else {
+          await _addLine(_BootLine('  [ WARN ] Overlay denied - status bar blocker disabled', color: _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
+        }
+      }
     }
 
     setState(() => _bootDone = true);

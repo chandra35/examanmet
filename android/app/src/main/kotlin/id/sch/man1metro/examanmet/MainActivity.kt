@@ -26,6 +26,9 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityManager
+import android.graphics.PixelFormat
+import android.view.Gravity
+import android.view.MotionEvent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -39,6 +42,7 @@ class MainActivity : FlutterActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var securityEventSink: EventChannel.EventSink? = null
     private var alertMediaPlayer: MediaPlayer? = null
+    private var statusBarBlocker: View? = null  // Invisible overlay to block status bar swipe
 
     // Bluetooth state change receiver
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -188,12 +192,14 @@ class MainActivity : FlutterActivity() {
                         isLockdownActive = true
                         runOnUiThread {
                             hideSystemUI()
+                            addStatusBarBlocker()
                             // No startLockTask() — screen pinning shows system dialogs
                             // that teach students how to escape. Instead we rely on:
                             // 1) Immersive mode (hides nav bar, re-applied every 1.5s)
                             // 2) Aggressive bring-to-front (0.1-0.5s return on app switch)
                             // 3) Key blocking (Home, Recent, Power long-press blocked)
                             // 4) Security audit (every 5s)
+                            // 5) Status bar blocker overlay (blocks swipe-down gesture)
                         }
                         handler.post(immersiveRunnable)
                         handler.post(securityAuditRunnable)
@@ -210,6 +216,7 @@ class MainActivity : FlutterActivity() {
                         handler.removeCallbacks(securityAuditRunnable)
                         handler.removeCallbacks(bringToFrontRunnable)
                         runOnUiThread {
+                            removeStatusBarBlocker()
                             showSystemUI()
                         }
                         result.success(true)
@@ -221,6 +228,31 @@ class MainActivity : FlutterActivity() {
                 "checkFloatingApps" -> {
                     val hasOverlay = checkOverlayApps()
                     result.success(hasOverlay)
+                }
+
+                "checkOverlayPermission" -> {
+                    val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        Settings.canDrawOverlays(this)
+                    } else {
+                        true // Pre-M doesn't need runtime permission
+                    }
+                    result.success(hasPermission)
+                }
+
+                "requestOverlayPermission" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                android.net.Uri.parse("package:$packageName")
+                            )
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
                 }
 
                 "checkBlockedApps" -> {
@@ -579,6 +611,98 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
+     * Programmatically collapse the notification/status bar panel.
+     * Uses reflection to access hidden StatusBarManager.collapsePanels() API.
+     */
+    @Suppress("DiscouragedPrivateApi")
+    private fun collapseStatusBar() {
+        try {
+            val sbService = getSystemService("statusbar")
+            if (sbService != null) {
+                val clazz = sbService.javaClass
+                val collapse = clazz.getMethod("collapsePanels")
+                collapse.invoke(sbService)
+            }
+        } catch (_: Exception) {
+            // Fallback: send CLOSE_SYSTEM_DIALOGS broadcast (works on Android < 12)
+            try {
+                @Suppress("DEPRECATION")
+                val closeIntent = Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+                sendBroadcast(closeIntent)
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Add an invisible overlay on the status bar area to intercept and block
+     * swipe-down gestures that would open the notification panel.
+     * Requires SYSTEM_ALERT_WINDOW permission.
+     */
+    private fun addStatusBarBlocker() {
+        if (statusBarBlocker != null) return  // Already added
+
+        try {
+            // Check if we have overlay permission
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+                // No overlay permission — blocker won't work but other protections still apply
+                return
+            }
+
+            val blocker = View(this)
+            blocker.setBackgroundColor(0) // Fully transparent
+
+            // Intercept all touches in the status bar area
+            blocker.setOnTouchListener { _, event ->
+                // Consume DOWN and MOVE events to prevent swipe-down gesture
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                        // Collapse panel just in case
+                        collapseStatusBar()
+                        true // Consume the event
+                    }
+                    else -> true
+                }
+            }
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                // Cover top ~50dp of screen (status bar area + a bit more)
+                (50 * resources.displayMetrics.density).toInt(),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else
+                    @Suppress("DEPRECATION")
+                    WindowManager.LayoutParams.TYPE_SYSTEM_ERROR,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                    or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            )
+            params.gravity = Gravity.TOP or Gravity.START
+
+            val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            wm.addView(blocker, params)
+            statusBarBlocker = blocker
+        } catch (e: Exception) {
+            // Overlay permission denied or other error — continue without blocker
+        }
+    }
+
+    /**
+     * Remove the status bar blocker overlay.
+     */
+    private fun removeStatusBarBlocker() {
+        statusBarBlocker?.let { blocker ->
+            try {
+                val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                wm.removeView(blocker)
+            } catch (_: Exception) {}
+            statusBarBlocker = null
+        }
+    }
+
+    /**
      * Hide system UI (status bar + navigation bar) using immersive sticky mode.
      */
     private fun hideSystemUI() {
@@ -622,12 +746,24 @@ class MainActivity : FlutterActivity() {
         if (hasFocus && isLockdownActive) {
             hideSystemUI()
         } else if (!hasFocus && isLockdownActive) {
-            // User pulled down notification bar or opened system dialog — re-hide ASAP
+            // User pulled down notification bar or opened system dialog
+            // Immediately try to collapse it and re-hide UI
+            collapseStatusBar()
+            hideSystemUI()
+            // Schedule rapid retries
             handler.postDelayed({
                 if (isLockdownActive) {
+                    collapseStatusBar()
                     hideSystemUI()
                 }
-            }, 100)
+            }, 50)
+            handler.postDelayed({
+                if (isLockdownActive) {
+                    collapseStatusBar()
+                    hideSystemUI()
+                    bringAppToFront()
+                }
+            }, 150)
         }
     }
 
@@ -647,9 +783,9 @@ class MainActivity : FlutterActivity() {
     override fun onPause() {
         super.onPause()
         if (isLockdownActive) {
-            // Aggressive multi-retry bring-to-front
+            // Aggressive multi-retry bring-to-front — start IMMEDIATELY
             handler.removeCallbacks(bringToFrontRunnable)
-            handler.postDelayed(bringToFrontRunnable, 100)
+            handler.post(bringToFrontRunnable)  // No delay — start instantly
         }
     }
 
@@ -665,11 +801,16 @@ class MainActivity : FlutterActivity() {
                 retryCount = 0
                 return
             }
+            collapseStatusBar()
             bringAppToFront()
             hideSystemUI()
             retryCount++
-            // Fast retries first, then persistent slower retries — NEVER give up
-            val delay = if (retryCount < 5) 200L else 500L
+            // Ultra-fast first 3 retries (100ms), then fast (200ms), then persistent (500ms)
+            val delay = when {
+                retryCount < 3 -> 100L
+                retryCount < 8 -> 200L
+                else -> 500L
+            }
             handler.postDelayed(this, delay)
         }
     }
@@ -761,6 +902,37 @@ class MainActivity : FlutterActivity() {
             intent.action == "android.intent.action.SEARCH_LONG_PRESS") {
             return
         }
+    }
+
+    /**
+     * Intercept touch events starting from the very top of the screen
+     * to prevent pulling down the notification shade/quick settings.
+     * This works even if the overlay blocker isn't active.
+     */
+    private var touchStartY = 0f
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        if (isLockdownActive && ev != null) {
+            val statusBarHeight = (24 * resources.displayMetrics.density)  // ~24dp
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    touchStartY = ev.rawY
+                    // If touch starts in the top edge, block it to prevent status bar pull
+                    if (ev.rawY < statusBarHeight) {
+                        collapseStatusBar()
+                        return true  // Consume — don't let system handle it
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    // If swipe started near top and moves down, block it
+                    if (touchStartY < statusBarHeight * 2 && ev.rawY > touchStartY + statusBarHeight) {
+                        collapseStatusBar()
+                        hideSystemUI()
+                        return true
+                    }
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {

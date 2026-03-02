@@ -185,6 +185,30 @@ class LockdownService {
     return false;
   }
 
+  /// Check if overlay permission is granted (needed for status bar blocker)
+  Future<bool> hasOverlayPermission() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('checkOverlayPermission');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to check overlay permission: $e');
+    }
+    return false;
+  }
+
+  /// Request overlay permission (opens system settings)
+  Future<void> requestOverlayPermission() async {
+    try {
+      if (Platform.isAndroid) {
+        await _channel.invokeMethod('requestOverlayPermission');
+      }
+    } catch (e) {
+      debugPrint('Failed to request overlay permission: $e');
+    }
+  }
+
   /// Check if any blocked apps are currently running
   Future<List<String>> getRunningBlockedApps() async {
     if (_config == null || _config!.blockedApps.isEmpty) return [];
