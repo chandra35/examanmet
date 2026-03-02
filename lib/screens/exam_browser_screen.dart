@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +8,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../services/config_service.dart';
 import '../services/lockdown_service.dart';
 import '../services/notification_service.dart';
+import '../services/exam_session_service.dart';
 import '../models/exam_config.dart';
 
 class ExamBrowserScreen extends StatefulWidget {
@@ -22,6 +24,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   final ConfigService _configService = ConfigService();
   final LockdownService _lockdownService = LockdownService();
   final NotificationService _notifService = NotificationService();
+  final ExamSessionService _sessionService = ExamSessionService();
 
   ExamConfig? _config;
   bool _isLoading = true;
@@ -47,6 +50,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   bool _bluetoothWarningShown = false;
   bool _headsetWarningShown = false;
   bool _rootWarningShown = false;
+  bool _isRemoteLocked = false;
+  String? _remoteLockReason;
 
   @override
   void initState() {
@@ -68,6 +73,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     _bluetoothCheckTimer?.cancel();
     _headsetCheckTimer?.cancel();
     _killAppsTimer?.cancel();
+    _sessionService.dispose();
     _lockdownService.onSecurityEvent = null;
     _lockdownService.stopAlertSound();
     _lockdownService.disableLockdown();
@@ -84,6 +90,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       // Do NOT count 'inactive' — it triggers on WebView dropdowns, popups,
       // system dialogs, and Moodle matching question answer selectors
       _violationCount++;
+      _sessionService.reportViolation('app_switch', detail: 'App went to background');
     } else if (state == AppLifecycleState.resumed) {
       // Re-enable lockdown when coming back
       _lockdownService.enableLockdown();
@@ -208,6 +215,17 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       (_) => _measurePing(),
     );
 
+    // Start exam session (server-side tracking + lock/unlock)
+    _sessionService.onLockStatusChanged = (isLocked, reason) {
+      if (mounted) {
+        setState(() {
+          _isRemoteLocked = isLocked;
+          _remoteLockReason = reason;
+        });
+      }
+    };
+    await _sessionService.startSession();
+
     setState(() => _isLoading = false);
   }
 
@@ -222,6 +240,114 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         _canGoBack = canGoBack;
         _canGoForward = canGoForward;
       });
+    }
+  }
+
+  /// Extract Moodle username and fullname from the loaded page via JavaScript
+  Future<void> _extractMoodleUser() async {
+    try {
+      final result = await _webController.runJavaScriptReturningResult('''
+        (function() {
+          try {
+            // Method 1: Moodle user menu (most reliable)
+            var userText = document.querySelector('.usertext');
+            if (userText) {
+              var fullname = userText.textContent.trim();
+              // Try to get username from profile link
+              var profileLink = document.querySelector('a[href*="/user/profile.php"]');
+              var username = '';
+              if (profileLink) {
+                var match = profileLink.href.match(/id=(\\d+)/);
+                if (match) username = match[1];
+              }
+              // Try login info
+              var loginInfo = document.querySelector('.logininfo a[href*="/user/profile.php"]');
+              if (loginInfo && !username) {
+                var m = loginInfo.href.match(/id=(\\d+)/);
+                if (m) username = m[1];
+              }
+              return JSON.stringify({type: 'moodle_user', fullname: fullname, username: username});
+            }
+
+            // Method 2: Moodle 4.x user menu
+            var userFullname = document.querySelector('.userfullname');
+            if (userFullname) {
+              return JSON.stringify({type: 'moodle_user', fullname: userFullname.textContent.trim(), username: ''});
+            }
+
+            // Method 3: Check M.cfg for username (Moodle JS config)
+            if (typeof M !== 'undefined' && M.cfg && M.cfg.sesskey) {
+              var uname = '';
+              var fname = '';
+              // Try requirejs module
+              try {
+                var userEl = document.querySelector('[data-userid]');
+                if (userEl) uname = userEl.getAttribute('data-userid');
+              } catch(e) {}
+              var menuText = document.querySelector('.userbutton .usertext, .userbutton .userbutton-name');
+              if (menuText) fname = menuText.textContent.trim();
+              if (uname || fname) {
+                return JSON.stringify({type: 'moodle_user', fullname: fname, username: uname});
+              }
+            }
+
+            // Method 4: Login page - extract from username field if filled
+            var usernameInput = document.querySelector('#username');
+            if (usernameInput && usernameInput.value) {
+              return JSON.stringify({type: 'moodle_user', fullname: '', username: usernameInput.value});
+            }
+
+            return JSON.stringify({type: 'no_user'});
+          } catch(e) {
+            return JSON.stringify({type: 'error', message: e.toString()});
+          }
+        })()
+      ''');
+
+      // Parse result (runJavaScriptReturningResult returns quoted string)
+      String jsonStr = result.toString();
+      // Remove surrounding quotes if present
+      if (jsonStr.startsWith('"') && jsonStr.endsWith('"')) {
+        jsonStr = jsonStr.substring(1, jsonStr.length - 1);
+      }
+      // Unescape
+      jsonStr = jsonStr.replaceAll('\\"', '"').replaceAll('\\\\', '\\');
+
+      _handleJsBridgeMessage(jsonStr);
+    } catch (e) {
+      debugPrint('ExaManmet: Error extracting Moodle user: $e');
+    }
+  }
+
+  /// Handle messages from JavaScript bridge (ExaManmetBridge channel or JS eval)
+  void _handleJsBridgeMessage(String message) {
+    try {
+      final data = json.decode(message) as Map<String, dynamic>;
+      final type = data['type'] as String? ?? '';
+
+      switch (type) {
+        case 'moodle_user':
+          final username = data['username'] as String? ?? '';
+          final fullname = data['fullname'] as String? ?? '';
+          if (username.isNotEmpty || fullname.isNotEmpty) {
+            debugPrint('ExaManmet: Moodle user detected - username: $username, fullname: $fullname');
+            _sessionService.updateMoodleUser(
+              username.isNotEmpty ? username : null,
+              fullname.isNotEmpty ? fullname : null,
+            );
+          }
+          break;
+        case 'no_user':
+          // No user logged in yet, will retry on next page load
+          break;
+        case 'error':
+          debugPrint('ExaManmet: JS bridge error: ${data['message']}');
+          break;
+        default:
+          debugPrint('ExaManmet: Unknown JS bridge message type: $type');
+      }
+    } catch (e) {
+      debugPrint('ExaManmet: Error handling JS bridge message: $e');
     }
   }
 
@@ -274,6 +400,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     _webController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(config.userAgent)
+      ..addJavaScriptChannel('ExaManmetBridge', onMessageReceived: (message) {
+        _handleJsBridgeMessage(message.message);
+      })
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
@@ -296,6 +425,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               _canGoBack = canGoBack;
               _canGoForward = canGoForward;
             });
+
+            // Extract Moodle username for session tracking
+            _extractMoodleUser();
 
             // Inject custom CSS
             if (config.customCss != null && config.customCss!.isNotEmpty) {
@@ -672,6 +804,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     final hasFloating = await _lockdownService.hasFloatingApps();
     if (hasFloating && mounted) {
+      _sessionService.reportViolation('floating_app', detail: 'Floating/overlay app detected');
       _showAnimatedDialog(
         icon: Icons.layers_clear_rounded,
         iconColor: Colors.white,
@@ -695,6 +828,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Increment violation for critical events
     if (event == 'home_pressed' || event == 'recent_pressed' || event == 'multi_window_detected') {
       _violationCount++;
+      _sessionService.reportViolation('app_switch', detail: 'Security event: $event');
       // Play alert sound on violation
       if (_config?.alertSoundOnViolation == true) {
         _lockdownService.playAlertSound();
@@ -727,6 +861,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
       if (threats.hasThreats && !_securityWarningShown) {
         _securityWarningShown = true;
+
+        // Report each threat type
+        if (threats.developerOptionsEnabled) {
+          _sessionService.reportViolation('developer_mode', detail: 'Developer options enabled');
+        }
+        if (threats.usbDebuggingEnabled) {
+          _sessionService.reportViolation('usb_debugging', detail: 'USB debugging enabled');
+        }
 
         // Play alert sound
         if (_config?.alertSoundOnViolation == true) {
@@ -1141,6 +1283,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     if (btStatus.enabled && !_bluetoothWarningShown) {
       _bluetoothWarningShown = true;
+      _sessionService.reportViolation('bluetooth', detail: 'Bluetooth active, devices: ${btStatus.connectedDevices.join(", ")}');
 
       // Play alert sound
       if (_config?.alertSoundOnViolation == true) {
@@ -1181,6 +1324,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     if (connected && !_headsetWarningShown) {
       _headsetWarningShown = true;
+      _sessionService.reportViolation('headset', detail: 'Headset/earphone connected');
 
       // Play alert sound
       if (_config?.alertSoundOnViolation == true) {
@@ -1215,6 +1359,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     if (rooted && !_rootWarningShown) {
       _rootWarningShown = true;
+      _sessionService.reportViolation('root_detected', detail: 'Rooted device detected');
 
       // Play alert sound for rooted device
       if (_config?.alertSoundOnViolation == true) {
@@ -1269,6 +1414,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     if (!mounted) return;
 
     if (kb.isAdware) {
+      _sessionService.reportViolation('adware_keyboard', detail: 'Adware keyboard detected: ${kb.keyboardName}');
+
       // Play alert sound
       if (_config?.alertSoundOnViolation == true) {
         _lockdownService.playAlertSound();
@@ -1488,6 +1635,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   }
 
   Future<void> _exitExam() async {
+    await _sessionService.endSession();
     await _lockdownService.disableLockdown();
     await WakelockPlus.disable();
     if (mounted) {
@@ -1558,38 +1706,139 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       child: Scaffold(
         body: SafeArea(
           bottom: false,
-          child: Column(
-          children: [
-            // Toolbar (if enabled)
-            if (_config!.showToolbar) _buildToolbar(),
+          child: Stack(
+            children: [
+              Column(
+              children: [
+                // Toolbar (if enabled)
+                if (_config!.showToolbar) _buildToolbar(),
 
-            // Loading indicator
-            if (_isPageLoading)
-              Container(
-                height: 3,
-                decoration: BoxDecoration(
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFF1565C0).withOpacity(0.3),
-                      blurRadius: 4,
-                      offset: const Offset(0, 1),
+                // Loading indicator
+                if (_isPageLoading)
+                  Container(
+                    height: 3,
+                    decoration: BoxDecoration(
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF1565C0).withOpacity(0.3),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                    child: LinearProgressIndicator(
+                      value: _loadingProgress > 0 ? _loadingProgress : null,
+                      backgroundColor: Colors.grey.shade100,
+                      color: const Color(0xFF1565C0),
+                      minHeight: 3,
+                    ),
+                  ),
+
+                // WebView
+                Expanded(
+                  child: WebViewWidget(controller: _webController),
+                ),
+              ],
+            ),
+
+              // Remote lock overlay
+              if (_isRemoteLocked) _buildLockOverlay(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Build the full-screen lock overlay shown when admin locks this session
+  Widget _buildLockOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: const Color(0xEE1B1B2F),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Lock icon with animated ring
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.red.withOpacity(0.15),
+                    border: Border.all(color: Colors.red.withOpacity(0.4), width: 3),
+                  ),
+                  child: const Icon(Icons.lock_rounded, color: Colors.red, size: 52),
+                ),
+                const SizedBox(height: 28),
+                const Text(
+                  'UJIAN ANDA DIKUNCI',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (_remoteLockReason != null && _remoteLockReason!.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.red.withOpacity(0.3)),
+                    ),
+                    child: Text(
+                      _remoteLockReason!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 15,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.amber.shade300, size: 18),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Hubungi pengawas untuk membuka kunci',
+                      style: TextStyle(
+                        color: Colors.amber.shade300,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ],
                 ),
-                child: LinearProgressIndicator(
-                  value: _loadingProgress > 0 ? _loadingProgress : null,
-                  backgroundColor: Colors.grey.shade100,
-                  color: const Color(0xFF1565C0),
-                  minHeight: 3,
+                const SizedBox(height: 40),
+                // Subtle pulsing indicator
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white.withOpacity(0.3),
+                  ),
                 ),
-              ),
-
-            // WebView
-            Expanded(
-              child: WebViewWidget(controller: _webController),
+                const SizedBox(height: 8),
+                Text(
+                  'Menunggu pengawas...',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.4),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
         ),
       ),
     );
