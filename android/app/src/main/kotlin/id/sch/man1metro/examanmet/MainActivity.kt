@@ -36,7 +36,6 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "id.sch.man1metro.examanmet/lockdown"
     private val EVENT_CHANNEL = "id.sch.man1metro.examanmet/security_events"
     private var isLockdownActive = false
-    private var pinningAccepted = false  // Track if user accepted screen pinning
     private val handler = Handler(Looper.getMainLooper())
     private var securityEventSink: EventChannel.EventSink? = null
     private var alertMediaPlayer: MediaPlayer? = null
@@ -187,13 +186,14 @@ class MainActivity : FlutterActivity() {
                 "startKioskMode" -> {
                     try {
                         isLockdownActive = true
-                        pinningAccepted = false
                         runOnUiThread {
                             hideSystemUI()
-                            // Start screen pinning ONCE — user sees 1 dialog then app is locked
-                            try {
-                                startLockTask()
-                            } catch (_: Exception) {}
+                            // No startLockTask() — screen pinning shows system dialogs
+                            // that teach students how to escape. Instead we rely on:
+                            // 1) Immersive mode (hides nav bar, re-applied every 1.5s)
+                            // 2) Aggressive bring-to-front (0.1-0.5s return on app switch)
+                            // 3) Key blocking (Home, Recent, Power long-press blocked)
+                            // 4) Security audit (every 5s)
                         }
                         handler.post(immersiveRunnable)
                         handler.post(securityAuditRunnable)
@@ -210,9 +210,6 @@ class MainActivity : FlutterActivity() {
                         handler.removeCallbacks(securityAuditRunnable)
                         handler.removeCallbacks(bringToFrontRunnable)
                         runOnUiThread {
-                            try {
-                                stopLockTask()
-                            } catch (_: Exception) {}
                             showSystemUI()
                         }
                         result.success(true)
@@ -640,32 +637,6 @@ class MainActivity : FlutterActivity() {
             hideSystemUI()
             // Stop bring-to-front retries since we're back in foreground
             handler.removeCallbacks(bringToFrontRunnable)
-
-            // Track if user accepted screen pinning
-            if (isInLockTaskMode()) {
-                pinningAccepted = true
-            }
-
-            // Only re-pin if user previously accepted pinning and it got unpinned
-            // Do NOT re-show the dialog if user never accepted / device doesn't support it
-            if (pinningAccepted && !isInLockTaskMode()) {
-                try {
-                    startLockTask()
-                } catch (_: Exception) {}
-            }
-        }
-    }
-
-    /**
-     * Check if the activity is currently in lock task (screen pinning) mode.
-     */
-    private fun isInLockTaskMode(): Boolean {
-        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
-        } else {
-            @Suppress("DEPRECATION")
-            am.isInLockTaskMode
         }
     }
 
