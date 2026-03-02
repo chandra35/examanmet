@@ -29,6 +29,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   double _loadingProgress = 0;
   String _pageTitle = '';
   bool _canGoBack = false;
+  bool _canGoForward = false;
+  int _pingMs = -1;
+  Timer? _pingTimer;
   Timer? _clipboardTimer;
   Timer? _floatingCheckTimer;
   Timer? _immersiveTimer;
@@ -55,6 +58,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _pingTimer?.cancel();
     _clipboardTimer?.cancel();
     _floatingCheckTimer?.cancel();
     _immersiveTimer?.cancel();
@@ -197,7 +201,28 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       Future.delayed(const Duration(seconds: 3), _checkKeyboard);
     }
 
+    // Ping indicator — measure latency every 5 seconds
+    _measurePing();
+    _pingTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _measurePing(),
+    );
+
     setState(() => _isLoading = false);
+  }
+
+  /// Update back/forward navigation state after navigation
+  Future<void> _updateNavState() async {
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
+    final canGoBack = await _webController.canGoBack();
+    final canGoForward = await _webController.canGoForward();
+    if (mounted) {
+      setState(() {
+        _canGoBack = canGoBack;
+        _canGoForward = canGoForward;
+      });
+    }
   }
 
   /// Refresh config from server silently to keep passwords and settings in sync
@@ -264,9 +289,13 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             final title = await _webController.getTitle();
             setState(() => _pageTitle = title ?? '');
 
-            // Check if can go back
+            // Check if can go back/forward
             final canGoBack = await _webController.canGoBack();
-            setState(() => _canGoBack = canGoBack);
+            final canGoForward = await _webController.canGoForward();
+            setState(() {
+              _canGoBack = canGoBack;
+              _canGoForward = canGoForward;
+            });
 
             // Inject custom CSS
             if (config.customCss != null && config.customCss!.isNotEmpty) {
@@ -1211,6 +1240,26 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     }
   }
 
+  // ==================== Ping Indicator ====================
+
+  Future<void> _measurePing() async {
+    if (!mounted) return;
+    try {
+      final stopwatch = Stopwatch()..start();
+      final socket = await Socket.connect('8.8.8.8', 53,
+          timeout: const Duration(seconds: 3));
+      stopwatch.stop();
+      socket.destroy();
+      if (mounted) {
+        setState(() => _pingMs = stopwatch.elapsedMilliseconds);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _pingMs = -1);
+      }
+    }
+  }
+
   // ==================== Keyboard (IME) Check ====================
 
   Future<void> _checkKeyboard() async {
@@ -1547,8 +1596,25 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   }
 
   Widget _buildToolbar() {
+    // Ping color coding
+    Color pingColor;
+    String pingText;
+    if (_pingMs < 0) {
+      pingColor = Colors.redAccent;
+      pingText = '---';
+    } else if (_pingMs < 80) {
+      pingColor = Colors.greenAccent;
+      pingText = '${_pingMs}ms';
+    } else if (_pingMs < 200) {
+      pingColor = Colors.orangeAccent;
+      pingText = '${_pingMs}ms';
+    } else {
+      pingColor = Colors.redAccent;
+      pingText = '${_pingMs}ms';
+    }
+
     return Container(
-      height: 52,
+      height: 48,
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           begin: Alignment.centerLeft,
@@ -1565,37 +1631,28 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       ),
       child: Row(
         children: [
-          const SizedBox(width: 4),
-          // Back button
-          if (_canGoBack)
-            _toolbarButton(
-              icon: Icons.arrow_back_ios_rounded,
-              onTap: () => _webController.goBack(),
-              tooltip: 'Kembali',
-            ),
+          const SizedBox(width: 2),
 
-          // Page title
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: Text(
-                _pageTitle.isNotEmpty ? _pageTitle : _config!.appName,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.3,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
+          // Back button
+          _toolbarButton(
+            icon: Icons.arrow_back_rounded,
+            onTap: _canGoBack ? () async {
+              await _webController.goBack();
+              _updateNavState();
+            } : null,
+            tooltip: 'Kembali',
+            enabled: _canGoBack,
           ),
 
-          // Quiz navigation button
+          // Forward button
           _toolbarButton(
-            icon: Icons.grid_view_rounded,
-            onTap: _showQuizNavigation,
-            tooltip: 'Navigasi Soal',
+            icon: Icons.arrow_forward_rounded,
+            onTap: _canGoForward ? () async {
+              await _webController.goForward();
+              _updateNavState();
+            } : null,
+            tooltip: 'Maju',
+            enabled: _canGoForward,
           ),
 
           // Reload button
@@ -1606,10 +1663,54 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               tooltip: 'Muat Ulang',
             ),
 
-          // Lock indicator badge
+          // Ping indicator
+          GestureDetector(
+            onTap: _measurePing,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: pingColor,
+                      boxShadow: [
+                        BoxShadow(
+                          color: pingColor.withOpacity(0.6),
+                          blurRadius: 4,
+                          spreadRadius: 1,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    pingText,
+                    style: TextStyle(
+                      color: pingColor,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const Spacer(),
+
+          // EXAM lock badge
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            margin: const EdgeInsets.only(right: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: [
@@ -1627,8 +1728,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 7,
-                  height: 7,
+                  width: 6,
+                  height: 6,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: Colors.greenAccent,
@@ -1655,6 +1756,15 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             ),
           ),
 
+          const SizedBox(width: 4),
+
+          // Quiz navigation button
+          _toolbarButton(
+            icon: Icons.grid_view_rounded,
+            onTap: _showQuizNavigation,
+            tooltip: 'Navigasi Soal',
+          ),
+
           // Exit button
           _toolbarButton(
             icon: Icons.power_settings_new_rounded,
@@ -1662,7 +1772,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             tooltip: 'Keluar',
             color: Colors.redAccent.shade100,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 2),
         ],
       ),
     );
@@ -1670,24 +1780,26 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
   Widget _toolbarButton({
     required IconData icon,
-    required VoidCallback onTap,
+    VoidCallback? onTap,
     required String tooltip,
     Color color = Colors.white,
+    bool enabled = true,
   }) {
+    final effectiveColor = enabled ? color : color.withOpacity(0.3);
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: onTap,
+        onTap: enabled ? onTap : null,
         borderRadius: BorderRadius.circular(12),
         splashColor: Colors.white.withOpacity(0.15),
         highlightColor: Colors.white.withOpacity(0.08),
         child: Tooltip(
           message: tooltip,
           child: Container(
-            width: 40,
-            height: 40,
+            width: 38,
+            height: 38,
             alignment: Alignment.center,
-            child: Icon(icon, color: color, size: 21),
+            child: Icon(icon, color: effectiveColor, size: 20),
           ),
         ),
       ),
