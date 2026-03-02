@@ -636,6 +636,27 @@ class MainActivity : FlutterActivity() {
         super.onResume()
         if (isLockdownActive) {
             hideSystemUI()
+            // Stop bring-to-front retries since we're back in foreground
+            handler.removeCallbacks(bringToFrontRunnable)
+            // Re-pin the screen if it was unpinned (e.g., user pressed back+recent)
+            try {
+                if (!isInLockTaskMode()) {
+                    startLockTask()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Check if the activity is currently in lock task (screen pinning) mode.
+     */
+    private fun isInLockTaskMode(): Boolean {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+        } else {
+            @Suppress("DEPRECATION")
+            am.isInLockTaskMode
         }
     }
 
@@ -654,6 +675,8 @@ class MainActivity : FlutterActivity() {
 
     /**
      * Runnable that aggressively brings app to front with retries.
+     * First 5 times: fast 200ms intervals. Then: persistent 500ms intervals until app is back.
+     * NEVER gives up — keeps retrying until app returns to foreground (onResume stops it).
      */
     private val bringToFrontRunnable = object : Runnable {
         private var retryCount = 0
@@ -665,12 +688,9 @@ class MainActivity : FlutterActivity() {
             bringAppToFront()
             hideSystemUI()
             retryCount++
-            // Retry up to 5 times with 200ms intervals
-            if (retryCount < 5) {
-                handler.postDelayed(this, 200)
-            } else {
-                retryCount = 0
-            }
+            // Fast retries first, then persistent slower retries — NEVER give up
+            val delay = if (retryCount < 5) 200L else 500L
+            handler.postDelayed(this, delay)
         }
     }
 
