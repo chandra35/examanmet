@@ -74,6 +74,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     _headsetCheckTimer?.cancel();
     _killAppsTimer?.cancel();
     _sessionService.dispose();
+    _notifService.onLockCommandReceived = null;
     _lockdownService.onSecurityEvent = null;
     _lockdownService.stopAlertSound();
     _lockdownService.disableLockdown();
@@ -224,6 +225,20 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         });
       }
     };
+
+    // FCM push lock/unlock — instant delivery even if heartbeat hasn't fired
+    _notifService.onLockCommandReceived = (sessionId, isLocked, reason) {
+      // Only apply if this FCM targets our session (or no session yet)
+      final mySession = _sessionService.sessionId;
+      if (mySession != null && sessionId != mySession.toString()) return;
+      if (mounted) {
+        setState(() {
+          _isRemoteLocked = isLocked;
+          _remoteLockReason = reason;
+        });
+      }
+    };
+
     await _sessionService.startSession();
 
     setState(() => _isLoading = false);
@@ -1800,6 +1815,132 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     );
   }
 
+  /// Show dialog for supervisor password unlock (offline fallback)
+  void _showSupervisorPasswordDialog() {
+    final controller = TextEditingController();
+    String? errorText;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1B1B2F),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Row(
+                children: [
+                  Icon(Icons.vpn_key_rounded, color: Colors.amber.shade300, size: 22),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Password Pengawas',
+                    style: TextStyle(color: Colors.white, fontSize: 18),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Masukkan password pengawas untuk membuka kunci ujian.',
+                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: controller,
+                    obscureText: true,
+                    autofocus: true,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      hintText: 'Password',
+                      hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                      errorText: errorText,
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.white.withOpacity(0.3)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: Colors.amber.shade300),
+                      ),
+                      errorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: Colors.red),
+                      ),
+                      focusedErrorBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: Colors.red),
+                      ),
+                    ),
+                    onSubmitted: (_) {
+                      // Allow submit with Enter key
+                      _verifySupervisorPassword(controller.text, ctx, setDialogState, (msg) {
+                        errorText = msg;
+                      });
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: Text('Batal', style: TextStyle(color: Colors.white.withOpacity(0.5))),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    _verifySupervisorPassword(controller.text, ctx, setDialogState, (msg) {
+                      errorText = msg;
+                    });
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.amber.shade700,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Unlock'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Verify entered password against cached supervisor password
+  void _verifySupervisorPassword(
+    String entered,
+    BuildContext dialogContext,
+    void Function(void Function()) setDialogState,
+    void Function(String?) setError,
+  ) {
+    final correctPassword = _config?.supervisorPassword;
+    if (correctPassword == null || correctPassword.isEmpty) {
+      setDialogState(() => setError('Password pengawas belum dikonfigurasi'));
+      return;
+    }
+    if (entered.isEmpty) {
+      setDialogState(() => setError('Password tidak boleh kosong'));
+      return;
+    }
+    if (entered == correctPassword) {
+      // Password correct — unlock
+      Navigator.of(dialogContext).pop();
+      setState(() {
+        _isRemoteLocked = false;
+        _remoteLockReason = null;
+      });
+      // Report the supervisor unlock as a violation note so admin knows
+      _sessionService.reportViolation(
+        'supervisor_unlock',
+        detail: 'Ujian di-unlock oleh pengawas menggunakan password offline',
+      );
+    } else {
+      setDialogState(() => setError('Password salah'));
+    }
+  }
+
   /// Build the full-screen lock overlay shown when admin locks this session
   Widget _buildLockOverlay() {
     return Positioned.fill(
@@ -1868,7 +2009,24 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                     ),
                   ],
                 ),
-                const SizedBox(height: 40),
+                const SizedBox(height: 32),
+                // Offline password unlock button
+                if (_config?.supervisorPassword != null &&
+                    _config!.supervisorPassword!.isNotEmpty)
+                  OutlinedButton.icon(
+                    onPressed: _showSupervisorPasswordDialog,
+                    icon: const Icon(Icons.vpn_key_rounded, size: 18),
+                    label: const Text('Unlock dengan Password Pengawas'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.amber.shade300,
+                      side: BorderSide(color: Colors.amber.shade300.withOpacity(0.5)),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 28),
                 // Subtle pulsing indicator
                 SizedBox(
                   width: 24,

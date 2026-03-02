@@ -28,6 +28,10 @@ class NotificationService {
   bool _initialized = false;
   bool _fcmReady = false;
 
+  /// Callback for lock/unlock commands received via FCM.
+  /// Parameters: sessionId, isLocked, lockReason
+  void Function(String sessionId, bool isLocked, String? reason)? onLockCommandReceived;
+
   /// Initialize the local notification plugin
   Future<void> initialize() async {
     if (_initialized) return;
@@ -88,6 +92,8 @@ class NotificationService {
       // Handle foreground messages — show as local notification
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         debugPrint('[FCM] Foreground message: ${message.data}');
+        // Check for lock/unlock command first
+        if (_handleLockCommand(message.data)) return;
         handleFcmMessage(message);
       });
 
@@ -115,6 +121,20 @@ class NotificationService {
 
   /// Whether FCM push is active (Firebase properly configured)
   bool get isFcmActive => _fcmReady;
+
+  /// Check if an FCM data message is a lock/unlock command.
+  /// Returns true if handled (callers should skip normal notification flow).
+  bool _handleLockCommand(Map<String, dynamic> data) {
+    if (data['action'] == 'lock_status') {
+      final sessionId = data['session_id'] as String? ?? '';
+      final isLocked = data['is_locked'] == '1';
+      final reason = data['lock_reason'] as String?;
+      debugPrint('[FCM] Lock command: session=$sessionId locked=$isLocked reason=$reason');
+      onLockCommandReceived?.call(sessionId, isLocked, reason);
+      return true;
+    }
+    return false;
+  }
 
   /// Handle an incoming FCM message — called from foreground listener
   /// and from the background handler in main.dart.

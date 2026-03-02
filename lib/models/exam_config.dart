@@ -8,6 +8,7 @@ class ExamConfig {
   final String userAgent;
   final String? appPassword;
   final String? exitPassword;
+  final String? supervisorPassword;
   final String? sebConfigKey;
   final String? sebExamKey;
   final bool allowScreenshot;
@@ -36,6 +37,7 @@ class ExamConfig {
     required this.userAgent,
     this.appPassword,
     this.exitPassword,
+    this.supervisorPassword,
     this.sebConfigKey,
     this.sebExamKey,
     this.allowScreenshot = false,
@@ -80,6 +82,7 @@ class ExamConfig {
       userAgent: _ensureMobileUA(json['user_agent']),
       appPassword: json['app_password'],
       exitPassword: json['exit_password'],
+      supervisorPassword: json['supervisor_password'],
       sebConfigKey: json['seb_config_key'],
       sebExamKey: json['seb_exam_key'],
       allowScreenshot: json['allow_screenshot'] ?? false,
@@ -116,6 +119,7 @@ class ExamConfig {
       'user_agent': userAgent,
       'app_password': appPassword,
       'exit_password': exitPassword,
+      'supervisor_password': supervisorPassword,
       'seb_config_key': sebConfigKey,
       'seb_exam_key': sebExamKey,
       'allow_screenshot': allowScreenshot,
