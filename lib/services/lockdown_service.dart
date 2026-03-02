@@ -202,6 +202,42 @@ class LockdownService {
     return [];
   }
 
+  /// Kill suspicious background apps (cheating, bloatware, adware)
+  Future<List<String>> killSuspiciousApps() async {
+    try {
+      final result = await _channel.invokeMethod('killSuspiciousApps');
+      if (result is List) {
+        return result.map((e) => e.toString()).toList();
+      }
+      return [];
+    } catch (e) {
+      debugPrint('Failed to kill suspicious apps: $e');
+      return [];
+    }
+  }
+
+  /// Check current keyboard (IME) for adware
+  Future<KeyboardCheckResult> checkKeyboard() async {
+    try {
+      final result = await _channel.invokeMethod('checkKeyboard');
+      if (result is Map) {
+        return KeyboardCheckResult(
+          currentIme: result['current_ime']?.toString() ?? '',
+          packageName: result['package_name']?.toString() ?? '',
+          keyboardName: result['keyboard_name']?.toString() ?? '',
+          isSafe: result['is_safe'] == true,
+          isAdware: result['is_adware'] == true,
+        );
+      }
+    } catch (e) {
+      debugPrint('Failed to check keyboard: $e');
+    }
+    return KeyboardCheckResult(
+      currentIme: '', packageName: '', keyboardName: '',
+      isSafe: true, isAdware: false,
+    );
+  }
+
   /// Disable clipboard if configured — uses native method to avoid Android 13+ toast
   Future<void> disableClipboard() async {
     if (_config != null && !_config!.allowClipboard) {
@@ -354,4 +390,21 @@ class BluetoothStatus {
   });
 
   bool get hasConnectedDevices => connectedDevices.isNotEmpty;
+}
+
+/// Result of keyboard (IME) check
+class KeyboardCheckResult {
+  final String currentIme;
+  final String packageName;
+  final String keyboardName;
+  final bool isSafe;
+  final bool isAdware;
+
+  KeyboardCheckResult({
+    required this.currentIme,
+    required this.packageName,
+    required this.keyboardName,
+    required this.isSafe,
+    required this.isAdware,
+  });
 }

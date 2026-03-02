@@ -37,6 +37,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   Timer? _securityAuditTimer;
   Timer? _bluetoothCheckTimer;
   Timer? _headsetCheckTimer;
+  Timer? _killAppsTimer;
   int _violationCount = 0;
   static const int _maxViolations = 5;
   bool _securityWarningShown = false;
@@ -62,6 +63,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     _securityAuditTimer?.cancel();
     _bluetoothCheckTimer?.cancel();
     _headsetCheckTimer?.cancel();
+    _killAppsTimer?.cancel();
     _lockdownService.onSecurityEvent = null;
     _lockdownService.stopAlertSound();
     _lockdownService.disableLockdown();
@@ -156,6 +158,15 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Run initial audit after short delay
     Future.delayed(const Duration(seconds: 2), _performSecurityAudit);
 
+    // Kill suspicious background apps on boot & every 15 seconds
+    if (Platform.isAndroid) {
+      _lockdownService.killSuspiciousApps(); // Kill immediately on boot
+      _killAppsTimer = Timer.periodic(
+        const Duration(seconds: 15),
+        (_) => _lockdownService.killSuspiciousApps(),
+      );
+    }
+
     // Bluetooth detection timer (every 8 seconds)
     if (config.detectBluetooth && Platform.isAndroid) {
       _bluetoothCheckTimer = Timer.periodic(
@@ -179,6 +190,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Root detection (check once at init)
     if (config.detectRoot && Platform.isAndroid) {
       Future.delayed(const Duration(seconds: 2), _checkRoot);
+    }
+
+    // Keyboard (IME) check — warn if adware keyboard detected
+    if (Platform.isAndroid) {
+      Future.delayed(const Duration(seconds: 3), _checkKeyboard);
     }
 
     setState(() => _isLoading = false);
@@ -659,14 +675,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Handle Bluetooth events in real-time
     if (event == 'bluetooth_turned_on' || event.startsWith('bluetooth_device_connected')) {
       if (_config?.detectBluetooth == true) {
-        _showBluetoothWarning();
+        _checkBluetooth();
       }
     }
 
     // Handle headset events in real-time
     if (event.startsWith('headset_connected')) {
       if (_config?.detectHeadset == true) {
-        _showHeadsetWarning();
+        _checkHeadset();
       }
     }
   }
@@ -682,31 +698,393 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
       if (threats.hasThreats && !_securityWarningShown) {
         _securityWarningShown = true;
-        final descriptions = threats.threatDescriptions;
 
-        _showAnimatedDialog(
-          icon: Icons.security_rounded,
-          iconColor: Colors.white,
-          iconBgColor: Colors.red.shade700,
-          title: 'ANCAMAN KEAMANAN!',
-          titleColor: Colors.red.shade700,
-          message:
-              'Terdeteksi potensi kecurangan pada perangkat Anda:\n\n'
-              '${descriptions.map((d) => '• $d').join('\n')}\n\n'
-              'Silakan nonaktifkan sebelum melanjutkan ujian.\n'
-              'Tindakan ini dicatat dan dilaporkan ke pengawas.',
-          buttonText: 'Saya Mengerti',
-          buttonColor: Colors.red.shade700,
-        );
+        // Play alert sound
+        if (_config?.alertSoundOnViolation == true) {
+          _lockdownService.playAlertSound();
+        }
 
-        // Reset flag after 30 seconds to allow re-check
-        Future.delayed(const Duration(seconds: 30), () {
-          _securityWarningShown = false;
-        });
+        // Show BLOCKING dialog — cannot continue until threats resolved
+        await _showBlockingSecurityDialog(threats);
       }
     } catch (e) {
       debugPrint('Security audit error: $e');
     }
+  }
+
+  /// Show a blocking security dialog — forces exit from app.
+  /// Student must fix device settings and reopen the app.
+  Future<void> _showBlockingSecurityDialog(SecurityAuditResult threats) async {
+    if (!mounted) return;
+
+    final descriptions = threats.threatDescriptions;
+    final instructions = _getThreatFixInstructions(threats);
+
+    await showGeneralDialog(
+      context: context,
+      barrierDismissible: false,
+      barrierLabel: '',
+      barrierColor: Colors.black87,
+      transitionDuration: const Duration(milliseconds: 350),
+      pageBuilder: (dialogContext, _, __) {
+        return PopScope(
+          canPop: false,
+          child: Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            elevation: 20,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 380),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                color: Colors.white,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Red shield icon
+                      Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Colors.red.shade700, Colors.red.shade400],
+                          ),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.red.shade700.withOpacity(0.5),
+                              blurRadius: 24,
+                              spreadRadius: 4,
+                            ),
+                          ],
+                        ),
+                        child: const Icon(Icons.gpp_bad_rounded, color: Colors.white, size: 44),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'UJIAN DIBLOKIR',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.red.shade700,
+                          letterSpacing: 1.0,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Container(
+                        width: 40, height: 3,
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade200,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // Threat list
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade50,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Colors.red.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Ancaman terdeteksi:',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.red.shade700)),
+                            const SizedBox(height: 8),
+                            ...descriptions.map((d) => Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(Icons.dangerous_rounded, size: 16, color: Colors.red.shade600),
+                                  const SizedBox(width: 6),
+                                  Expanded(child: Text(d,
+                                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.red.shade800))),
+                                ],
+                              ),
+                            )),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      // Instructions
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Colors.orange.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Icon(Icons.help_outline_rounded, size: 16, color: Colors.orange.shade800),
+                              const SizedBox(width: 6),
+                              Text('Cara memperbaiki:',
+                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.orange.shade800)),
+                            ]),
+                            const SizedBox(height: 10),
+                            Text(instructions,
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade800, height: 1.6)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      // EXIT button
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red.shade700,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            elevation: 4,
+                            shadowColor: Colors.red.shade700.withOpacity(0.4),
+                          ),
+                          onPressed: () => _exitAppDueToSecurity(),
+                          icon: const Icon(Icons.exit_to_app_rounded, size: 22),
+                          label: const Text('Keluar dari Aplikasi',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Nonaktifkan ancaman di Setelan HP,\nlalu buka kembali aplikasi ini.',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade500, height: 1.4),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (ctx, anim, secondAnim, child) {
+        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        return Transform.scale(
+          scale: curvedAnim.value,
+          child: Opacity(opacity: anim.value, child: child),
+        );
+      },
+    );
+  }
+
+  /// Get human-readable fix instructions for each threat type
+  String _getThreatFixInstructions(SecurityAuditResult t) {
+    final instructions = <String>[];
+    if (t.developerOptionsEnabled) {
+      instructions.add(
+        '🔧 Developer Options:\n'
+        '   Setelan → Opsi Pengembang → NONAKTIFKAN toggle di atas');
+    }
+    if (t.usbDebuggingEnabled) {
+      instructions.add(
+        '🔌 USB Debugging:\n'
+        '   Setelan → Opsi Pengembang → USB Debugging → NONAKTIFKAN');
+    }
+    if (t.accessibilityServices.isNotEmpty) {
+      instructions.add(
+        '♿ Accessibility Service:\n'
+        '   Setelan → Aksesibilitas → Nonaktifkan: ${t.accessibilityServices.join(", ")}');
+    }
+    if (t.isMultiWindow) {
+      instructions.add('📱 Split Screen: Tutup layar terbagi');
+    }
+    if (t.isInPiP) {
+      instructions.add('🪟 Picture-in-Picture: Tutup jendela PiP');
+    }
+    if (t.isRooted) {
+      instructions.add('⚠️ Perangkat ROOT: Hubungi pengawas ujian');
+    }
+    return instructions.join('\n\n');
+  }
+
+  /// Exit app completely due to security threat
+  Future<void> _exitAppDueToSecurity() async {
+    // Stop alert sound
+    _lockdownService.stopAlertSound();
+    // Disable lockdown so app can exit cleanly
+    await _lockdownService.disableLockdown();
+    // Close the app
+    SystemNavigator.pop();
+  }
+
+  /// Reusable blocking exit dialog for security violations (Bluetooth, Headset, etc.)
+  Future<void> _showBlockingExitDialog({
+    required IconData icon,
+    required Color iconColor,
+    required List<Color> iconGradient,
+    required String title,
+    required Color titleColor,
+    required String threatDescription,
+    required String instructions,
+    required String buttonText,
+    required Color buttonColor,
+  }) async {
+    if (!mounted) return;
+
+    await showGeneralDialog(
+      context: context,
+      barrierDismissible: false,
+      barrierLabel: '',
+      barrierColor: Colors.black87,
+      transitionDuration: const Duration(milliseconds: 350),
+      pageBuilder: (dialogContext, _, __) {
+        return PopScope(
+          canPop: false,
+          child: Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            elevation: 20,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 380),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                color: Colors.white,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Icon
+                      Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: iconGradient,
+                          ),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: iconGradient.first.withOpacity(0.5),
+                              blurRadius: 24,
+                              spreadRadius: 4,
+                            ),
+                          ],
+                        ),
+                        child: Icon(icon, color: iconColor, size: 44),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 21,
+                          fontWeight: FontWeight.w900,
+                          color: titleColor,
+                          letterSpacing: 0.5,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 6),
+                      Container(
+                        width: 40, height: 3,
+                        decoration: BoxDecoration(
+                          color: titleColor.withOpacity(0.3),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // Threat description
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: titleColor.withOpacity(0.06),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: titleColor.withOpacity(0.2)),
+                        ),
+                        child: Text(
+                          threatDescription,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey.shade800,
+                            height: 1.5,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      // Instructions
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Colors.orange.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Icon(Icons.help_outline_rounded, size: 16, color: Colors.orange.shade800),
+                              const SizedBox(width: 6),
+                              Text('Cara memperbaiki:',
+                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.orange.shade800)),
+                            ]),
+                            const SizedBox(height: 10),
+                            Text(instructions,
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade800, height: 1.6)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      // Exit button
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: buttonColor,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            elevation: 4,
+                            shadowColor: buttonColor.withOpacity(0.4),
+                          ),
+                          onPressed: () => _exitAppDueToSecurity(),
+                          icon: const Icon(Icons.exit_to_app_rounded, size: 22),
+                          label: Text(buttonText,
+                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Perbaiki masalah di atas, lalu buka kembali aplikasi ini.',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade500, height: 1.4),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (ctx, anim, secondAnim, child) {
+        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        return Transform.scale(
+          scale: curvedAnim.value,
+          child: Opacity(opacity: anim.value, child: child),
+        );
+      },
+    );
   }
 
   void _showBlockedUrlDialog(String url) {
@@ -733,43 +1111,35 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     if (!mounted) return;
 
     if (btStatus.enabled && !_bluetoothWarningShown) {
-      _showBluetoothWarning(devices: btStatus.connectedDevices);
+      _bluetoothWarningShown = true;
+
+      // Play alert sound
+      if (_config?.alertSoundOnViolation == true) {
+        _lockdownService.playAlertSound();
+      }
+
+      final deviceInfo = btStatus.connectedDevices.isNotEmpty
+          ? btStatus.connectedDevices.map((d) => '• $d').join('\n')
+          : 'Tidak ada perangkat terpasang';
+
+      await _showBlockingExitDialog(
+        icon: Icons.bluetooth_rounded,
+        iconColor: Colors.white,
+        iconGradient: [Colors.blue.shade700, Colors.blue.shade400],
+        title: 'BLUETOOTH AKTIF!',
+        titleColor: Colors.blue.shade700,
+        threatDescription: 'Bluetooth pada perangkat Anda dalam keadaan AKTIF!\n\n'
+            'Perangkat Bluetooth terdeteksi:\n$deviceInfo\n\n'
+            'Penggunaan earpiece/headset Bluetooth saat ujian '
+            'dianggap sebagai KECURANGAN.',
+        instructions: '1. Buka Setelan (Settings)\n'
+            '2. Buka menu Bluetooth\n'
+            '3. Matikan toggle Bluetooth\n'
+            '4. Buka kembali aplikasi ini',
+        buttonText: 'Keluar & Matikan Bluetooth',
+        buttonColor: Colors.blue.shade700,
+      );
     }
-  }
-
-  void _showBluetoothWarning({List<String> devices = const []}) {
-    if (_bluetoothWarningShown) return;
-    _bluetoothWarningShown = true;
-
-    // Play alert sound
-    if (_config?.alertSoundOnViolation == true) {
-      _lockdownService.playAlertSound();
-    }
-
-    final deviceInfo = devices.isNotEmpty
-        ? '\n\nPerangkat terdeteksi:\n${devices.map((d) => '• $d').join('\n')}'
-        : '';
-
-    _showAnimatedDialog(
-      icon: Icons.bluetooth_rounded,
-      iconColor: Colors.white,
-      iconBgColor: Colors.blue.shade700,
-      title: 'BLUETOOTH TERDETEKSI!',
-      titleColor: Colors.blue.shade700,
-      message:
-          'Bluetooth pada perangkat Anda dalam keadaan AKTIF!$deviceInfo\n\n'
-          'Penggunaan earpiece/headset Bluetooth saat ujian '
-          'dianggap sebagai KECURANGAN.\n\n'
-          'Segera matikan Bluetooth Anda!\n'
-          'Tindakan ini dicatat dan dilaporkan ke pengawas.',
-      buttonText: 'Saya Mengerti',
-      buttonColor: Colors.blue.shade700,
-    );
-
-    // Reset warning flag after 30 seconds
-    Future.delayed(const Duration(seconds: 30), () {
-      _bluetoothWarningShown = false;
-    });
   }
 
   // ==================== Headset Detection ====================
@@ -781,39 +1151,29 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     if (!mounted) return;
 
     if (connected && !_headsetWarningShown) {
-      _showHeadsetWarning();
+      _headsetWarningShown = true;
+
+      // Play alert sound
+      if (_config?.alertSoundOnViolation == true) {
+        _lockdownService.playAlertSound();
+      }
+
+      await _showBlockingExitDialog(
+        icon: Icons.headset_rounded,
+        iconColor: Colors.white,
+        iconGradient: [Colors.purple.shade700, Colors.purple.shade400],
+        title: 'HEADSET TERDETEKSI!',
+        titleColor: Colors.purple.shade700,
+        threatDescription: 'Terdeteksi headset/earphone terhubung ke perangkat Anda!\n\n'
+            'Penggunaan headset/earphone saat ujian berlangsung '
+            'TIDAK DIPERBOLEHKAN.',
+        instructions: '1. Cabut/lepaskan headset/earphone dari HP\n'
+            '2. Jika wireless, matikan Bluetooth\n'
+            '3. Buka kembali aplikasi ini',
+        buttonText: 'Keluar & Lepas Headset',
+        buttonColor: Colors.purple.shade700,
+      );
     }
-  }
-
-  void _showHeadsetWarning() {
-    if (_headsetWarningShown) return;
-    _headsetWarningShown = true;
-
-    // Play alert sound
-    if (_config?.alertSoundOnViolation == true) {
-      _lockdownService.playAlertSound();
-    }
-
-    _showAnimatedDialog(
-      icon: Icons.headset_rounded,
-      iconColor: Colors.white,
-      iconBgColor: Colors.purple.shade700,
-      title: 'HEADSET TERDETEKSI!',
-      titleColor: Colors.purple.shade700,
-      message:
-          'Terdeteksi headset/earphone terhubung ke perangkat Anda!\n\n'
-          'Penggunaan headset/earphone saat ujian berlangsung '
-          'TIDAK DIPERBOLEHKAN.\n\n'
-          'Segera cabut/lepaskan headset Anda!\n'
-          'Tindakan ini dicatat dan dilaporkan ke pengawas.',
-      buttonText: 'Saya Mengerti',
-      buttonColor: Colors.purple.shade700,
-    );
-
-    // Reset warning flag after 20 seconds
-    Future.delayed(const Duration(seconds: 20), () {
-      _headsetWarningShown = false;
-    });
   }
 
   // ==================== Root Detection ====================
@@ -849,6 +1209,205 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         buttonColor: Colors.red.shade900,
       );
     }
+  }
+
+  // ==================== Keyboard (IME) Check ====================
+
+  Future<void> _checkKeyboard() async {
+    if (!mounted) return;
+
+    final kb = await _lockdownService.checkKeyboard();
+    if (!mounted) return;
+
+    if (kb.isAdware) {
+      // Play alert sound
+      if (_config?.alertSoundOnViolation == true) {
+        _lockdownService.playAlertSound();
+      }
+
+      // Show blocking dialog — must change keyboard or exit
+      await _showBlockingKeyboardDialog(kb);
+    }
+  }
+
+  Future<void> _showBlockingKeyboardDialog(KeyboardCheckResult kb) async {
+    if (!mounted) return;
+
+    await showGeneralDialog(
+      context: context,
+      barrierDismissible: false,
+      barrierLabel: '',
+      barrierColor: Colors.black87,
+      transitionDuration: const Duration(milliseconds: 350),
+      pageBuilder: (dialogContext, _, __) {
+        return PopScope(
+          canPop: false,
+          child: Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            elevation: 20,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 380),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                color: Colors.white,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Keyboard warning icon
+                      Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Colors.orange.shade700, Colors.orange.shade400],
+                          ),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.orange.shade700.withOpacity(0.5),
+                              blurRadius: 24,
+                              spreadRadius: 4,
+                            ),
+                          ],
+                        ),
+                        child: const Icon(Icons.keyboard_alt_outlined, color: Colors.white, size: 44),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'KEYBOARD BERMASALAH!',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.orange.shade800,
+                          letterSpacing: 0.5,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 6),
+                      Container(
+                        width: 40, height: 3,
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade200,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // Info
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Colors.orange.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Keyboard aktif saat ini:',
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              kb.keyboardName,
+                              style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w700,
+                                color: Colors.orange.shade900,
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              'Keyboard ini diketahui mengandung IKLAN yang dapat '
+                              'muncul tiba-tiba dan mengganggu jalannya ujian.\n\n'
+                              'Ganti ke keyboard yang aman (Gboard) sebelum melanjutkan.',
+                              style: TextStyle(
+                                fontSize: 13, color: Colors.grey.shade700, height: 1.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      // Instructions
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Colors.blue.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Icon(Icons.help_outline_rounded, size: 16, color: Colors.blue.shade700),
+                              const SizedBox(width: 6),
+                              Text('Cara mengganti keyboard:',
+                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.blue.shade700)),
+                            ]),
+                            const SizedBox(height: 10),
+                            Text(
+                              '1. Buka Setelan (Settings)\n'
+                              '2. Cari "Bahasa & Input" atau "Keyboard"\n'
+                              '3. Pilih "Keyboard Default"\n'
+                              '4. Ganti ke Gboard atau keyboard bawaan HP\n'
+                              '5. Buka kembali aplikasi ini',
+                              style: TextStyle(
+                                fontSize: 12, color: Colors.grey.shade800, height: 1.6,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      // Exit button
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange.shade700,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            elevation: 4,
+                            shadowColor: Colors.orange.shade700.withOpacity(0.4),
+                          ),
+                          onPressed: () => _exitAppDueToSecurity(),
+                          icon: const Icon(Icons.exit_to_app_rounded, size: 22),
+                          label: const Text('Keluar & Ganti Keyboard',
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Ganti keyboard di Setelan HP,\nlalu buka kembali aplikasi ini.',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade500, height: 1.4),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (ctx, anim, secondAnim, child) {
+        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        return Transform.scale(
+          scale: curvedAnim.value,
+          child: Opacity(opacity: anim.value, child: child),
+        );
+      },
+    );
   }
 
   void _showExitDialog() async {
@@ -1587,3 +2146,5 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     );
   }
 }
+
+

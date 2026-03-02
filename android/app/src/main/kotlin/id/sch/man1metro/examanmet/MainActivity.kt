@@ -127,7 +127,6 @@ class MainActivity : FlutterActivity() {
                     handler.postDelayed({
                         if (isLockdownActive) {
                             hideSystemUI()
-                            try { startLockTask() } catch (_: Exception) {}
                         }
                     }, 300)
                     sendSecurityEvent("screen_on")
@@ -189,10 +188,6 @@ class MainActivity : FlutterActivity() {
                         isLockdownActive = true
                         runOnUiThread {
                             hideSystemUI()
-                            // Enable screen pinning — blocks Home, Recent, and notifications
-                            try {
-                                startLockTask()
-                            } catch (_: Exception) {}
                         }
                         handler.post(immersiveRunnable)
                         handler.post(securityAuditRunnable)
@@ -208,9 +203,6 @@ class MainActivity : FlutterActivity() {
                         handler.removeCallbacks(immersiveRunnable)
                         handler.removeCallbacks(securityAuditRunnable)
                         runOnUiThread {
-                            try {
-                                stopLockTask()
-                            } catch (_: Exception) {}
                             showSystemUI()
                         }
                         result.success(true)
@@ -284,6 +276,18 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
 
+                // Kill background cheating & bloatware apps
+                "killSuspiciousApps" -> {
+                    val killed = killSuspiciousBackgroundApps()
+                    result.success(killed)
+                }
+
+                // Check current keyboard (IME)
+                "checkKeyboard" -> {
+                    val imeInfo = checkCurrentKeyboard()
+                    result.success(imeInfo)
+                }
+
                 else -> result.notImplemented()
             }
         }
@@ -347,6 +351,227 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
+     * Kill known cheating apps, screen recorders, remote desktop, adware/bloatware.
+     * Returns list of package names that were targeted for kill.
+     */
+    private fun killSuspiciousBackgroundApps(): List<String> {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val killed = mutableListOf<String>()
+
+        val blacklist = listOf(
+            // === Screen Mirroring / Remote Desktop ===
+            "com.teamviewer.teamviewer.market.mobile",
+            "com.teamviewer.host.market",
+            "com.teamviewer.quicksupport.market",
+            "com.anydesk.anydeskandroid",
+            "com.rustdesk.rustdesk",
+            "com.microsoft.rdc.android",
+            "com.microsoft.rdc.androidx",
+            "com.chrome.remote.desktop",
+            "com.realvnc.viewer.android",
+            "com.splashtop.remote.pad.v2",
+            "com.airdroid.app",
+            "com.sand.airdroid",
+            "com.lge.smartshare",
+            "com.samsung.android.smartmirroring",
+            "tv.parsec.client",
+            "com.squirrels.reflector",
+            "com.apowersoft.mirror",
+            "com.vysor.app",
+
+            // === Screen Recorder ===
+            "com.kimcy929.screenrecorder",
+            "com.hecorat.screenrecorder.free",
+            "com.duapps.recorder",
+            "com.nll.screenrecorder",
+            "com.mobizen.recorder",
+            "com.rsupport.mobizen.sec",
+            "com.az.screenrecorder",
+            "com.rec.screen.recorder",
+            "com.screencastomatic.app",
+            "com.wondershare.democreator",
+            "com.apowersoft.screenrecorder",
+            "app.screenrecorder.xrecorder",
+            "com.recording.screenrecorder",
+
+            // === Virtual Camera / Streaming ===
+            "com.dev47apps.droidcam",
+            "com.dev47apps.droidcamx",
+            "com.lenzai.streamer",
+            "com.pas.webcam",
+
+            // === Dual/Clone/Parallel Space ===
+            "com.lbe.parallel.intl",
+            "com.lbe.parallel.intl.arm64",
+            "com.excelliance.dualaid",
+            "com.ludashi.dualspace",
+            "info.cloneapp.mochat.in.goast",
+            "com.polestar.multiaccount",
+            "com.oasisfeng.island",
+            "com.nox.mopen.app",
+
+            // === Floating / Overlay Cheating ===
+            "com.flatingchat.floatingchat",
+            "com.lwi.android.flapps",
+            "com.xda.onehandy",
+            "com.bigtincan.android.airy",
+            "com.easyapps.catbrowser",
+            "com.nicepage.floatingbrowser",
+            "com.AgileStar.FloatingBrowser",
+
+            // === VPN / Proxy (optional — bisa bypass filter) ===
+            // "org.torproject.torbrowser",
+            // "com.psiphon3",
+            // "com.psiphon3.subscription",
+
+            // === Xiaomi / MIUI Bloatware & Ads ===
+            "com.miui.msa",
+            "com.miui.hybrid.accessory",
+            "com.xiaomi.gamecenter.sdk.service",
+            "com.miui.daemon",
+            "com.miui.analytics",
+            "com.xiaomi.ab",
+            "com.xiaomi.joyose",
+
+            // === Oppo / Realme / ColorOS ===
+            "com.heytap.market",
+            "com.heytap.browser",
+            "com.coloros.gamespace",
+            "com.opos.ads",
+            "com.nearme.gamecenter",
+            "com.coloros.floatassistant",
+
+            // === Vivo / FuntouchOS ===
+            "com.vivo.game",
+            "com.vivo.easyshare",
+            "com.vivo.appstore",
+            "com.bbk.appstore",
+            "com.vivo.floatingball",
+
+            // === Transsion (Itel / Infinix / Tecno) ===
+            "com.transsion.hubservice",
+            "com.palm.store",
+            "com.phoenix.browser",
+            "com.transsion.overlayservice",
+            "com.transsion.applock",
+
+            // === Samsung ===
+            "com.samsung.android.game.gamehome",
+            "com.samsung.android.game.gametools",
+            "com.samsung.android.app.edgescreen",
+
+            // === Huawei ===
+            "com.huawei.appmarket",
+            "com.huawei.gamebox",
+            "com.huawei.gameassistant",
+
+            // === General cheating / note apps ===
+            "com.google.ar.lens",
+            "com.google.android.apps.docs",
+            "com.evernote",
+            "com.microsoft.office.onenote",
+            "com.automattic.simplenote",
+
+            // === AI / ChatGPT ===
+            "com.openai.chatgpt",
+            "com.google.android.apps.bard",
+            "com.microsoft.copilot",
+
+            // === Keyboard Ad SDKs / Adware Keyboards (kill ad services, not keyboard itself) ===
+            "com.cootek.smartinputv5.ads",
+            "com.cootek.smartinputv5.skin",
+            "com.emoji.keyboard.touchpal.ads",
+            "com.qisi.inputmethod.ads",
+            "com.jb.emoji.gokeyboard",
+            "com.jb.gokeyboard.ads",
+            "com.jb.gokeyboard.plugin",
+            "com.cmcm.live",
+            "com.kkkeyboard.emoji.keyboard",
+            "com.hit.language.emoji.keyboard",
+            "com.macaron.keyboard.inputmethod",
+            "com.newcheetah.inputmethod",
+            "com.icoretec.keyboard",
+            "com.yy.biu.inputmethod"
+        )
+
+        for (pkg in blacklist) {
+            try {
+                am.killBackgroundProcesses(pkg)
+                killed.add(pkg)
+            } catch (_: Exception) {}
+        }
+
+        return killed
+    }
+
+    /**
+     * Check current active keyboard (IME) and classify it
+     */
+    private fun checkCurrentKeyboard(): Map<String, Any> {
+        val result = mutableMapOf<String, Any>()
+        val currentIme = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD) ?: ""
+        result["current_ime"] = currentIme
+
+        // Extract package name from IME id (format: com.package.name/.ServiceName)
+        val packageName = currentIme.split("/").firstOrNull() ?: ""
+        result["package_name"] = packageName
+
+        // Known safe keyboards
+        val safeKeyboards = listOf(
+            "com.google.android.inputmethod.latin",   // Gboard
+            "com.android.inputmethod.latin",          // AOSP Keyboard
+            "com.samsung.android.honeyboard",         // Samsung Keyboard
+            "com.sec.android.inputmethod",            // Samsung (old)
+            "com.miui.inputmethod.wubi",              // MIUI default
+            "com.sohu.inputmethod.sogou.xiaomi",      // Xiaomi Sogou
+            "com.baidu.input_mi",                     // Xiaomi Baidu
+            "com.oppo.ime",                           // Oppo keyboard
+            "com.heytap.inputmethod",                 // Oppo/Realme
+            "com.vivo.ai.ime",                        // Vivo keyboard
+            "com.bbk.inputmethod",                    // Vivo (old)
+            "com.touchtype.swiftkey",                 // SwiftKey (Microsoft)
+            "com.huawei.inputmethod",                 // Huawei keyboard
+            "com.transsion.input",                    // Itel/Infinix/Tecno
+            "com.google.android.tts",                 // Google TTS
+            "com.android.adbkeyboard"                 // Debug (ignore)
+        )
+
+        // Known adware keyboards
+        val adwareKeyboards = listOf(
+            "com.cootek.smartinputv5",                 // TouchPal
+            "com.emoji.keyboard.touchpal",            // Facemoji / TouchPal variant
+            "com.qisi.inputmethod",                   // Kika Keyboard
+            "com.jb.emoji.gokeyboard",                // GO Keyboard
+            "com.jb.gokeyboard",                      // GO Keyboard variant
+            "com.cmcm.live",                          // Cheetah Keyboard
+            "com.hit.language.emoji.keyboard",         // HiType Keyboard
+            "com.kkkeyboard.emoji.keyboard",          // KK Keyboard
+            "com.newcheetah.inputmethod",             // New Cheetah KB
+            "com.macaron.keyboard.inputmethod",       // Macaron Keyboard
+            "com.icoretec.keyboard",                  // iCore Keyboard
+            "com.yy.biu.inputmethod",                 // Biu Keyboard
+            "com.fotoable.keyboard",                  // Fotoable Keyboard
+            "com.camelgames.itype"                    // FunType Keyboard
+        )
+
+        val isSafe = safeKeyboards.any { packageName.startsWith(it) }
+        val isAdware = adwareKeyboards.any { packageName.startsWith(it) }
+
+        result["is_safe"] = isSafe
+        result["is_adware"] = isAdware
+
+        // Get a user-friendly keyboard name
+        try {
+            val appInfo = packageManager.getApplicationInfo(packageName, 0)
+            result["keyboard_name"] = packageManager.getApplicationLabel(appInfo).toString()
+        } catch (_: Exception) {
+            result["keyboard_name"] = packageName
+        }
+
+        return result
+    }
+
+    /**
      * Hide system UI (status bar + navigation bar) using immersive sticky mode.
      */
     private fun hideSystemUI() {
@@ -403,8 +628,6 @@ class MainActivity : FlutterActivity() {
         super.onResume()
         if (isLockdownActive) {
             hideSystemUI()
-            // Re-apply screen pinning in case it was dropped
-            try { startLockTask() } catch (_: Exception) {}
         }
     }
 
