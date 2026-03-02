@@ -478,6 +478,56 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               ''');
             }
 
+            // Restore Moodle navigation elements hidden by SEB mode
+            // When SEB user-agent is detected, Moodle hides nav drawer, user menu, logout etc.
+            // We force them back visible so students can navigate.
+            await _webController.runJavaScript('''
+              (function() {
+                if (window.__moodleNavRestored) return;
+                window.__moodleNavRestored = true;
+
+                var style = document.createElement('style');
+                style.textContent = \`
+                  /* Force show Moodle elements hidden by SEB mode */
+                  #nav-drawer, .drawer, [data-region="drawer"],
+                  .usermenu, #user-menu-toggle, .user-menu,
+                  .navbar .nav-link[data-toggle="dropdown"],
+                  #page-footer, .logininfo,
+                  .course-content .activity a,
+                  a[href*="logout.php"],
+                  .nav-tabs, .breadcrumb,
+                  [data-region="drawer-toggle"] {
+                    display: block !important;
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                    pointer-events: auto !important;
+                  }
+                  /* But keep our toolbar area clean */
+                  body { padding-top: 0 !important; }
+                \`;
+                document.head.appendChild(style);
+
+                // Re-enable hidden links and buttons
+                document.querySelectorAll('[aria-hidden="true"]').forEach(function(el) {
+                  if (el.closest('.usermenu') || el.closest('#nav-drawer') ||
+                      el.closest('.drawer') || el.id === 'nav-drawer') {
+                    el.setAttribute('aria-hidden', 'false');
+                    el.style.display = '';
+                    el.style.visibility = 'visible';
+                  }
+                });
+
+                // Re-enable disabled links
+                document.querySelectorAll('.disabled, [disabled]').forEach(function(el) {
+                  if (el.tagName === 'A' || el.closest('.usermenu') || el.closest('.breadcrumb')) {
+                    el.classList.remove('disabled');
+                    el.removeAttribute('disabled');
+                    el.style.pointerEvents = 'auto';
+                  }
+                });
+              })();
+            ''');
+
             // Convert all sebs:// and seb:// links to https:// so they work in WebView
             // Moodle "Launch Safe Exam Browser" button uses sebs:// which WebView can't handle natively
             await _webController.runJavaScript('''
@@ -2007,6 +2057,13 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
           const SizedBox(width: 4),
 
+          // Moodle menu button (Dashboard, Kursusku, Logout)
+          _toolbarButton(
+            icon: Icons.menu_rounded,
+            onTap: _showMoodleMenu,
+            tooltip: 'Menu Moodle',
+          ),
+
           // Quiz navigation button
           _toolbarButton(
             icon: Icons.grid_view_rounded,
@@ -2051,6 +2108,210 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             child: Icon(icon, color: effectiveColor, size: 20),
           ),
         ),
+      ),
+    );
+  }
+
+  // ==================== MOODLE MENU (Dashboard, Kursusku, Logout) ====================
+
+  void _showMoodleMenu() {
+    final moodleUrl = _config!.moodleUrl.replaceAll(RegExp(r'/+$'), '');
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar
+            Container(
+              width: 40, height: 4,
+              margin: const EdgeInsets.only(top: 10, bottom: 6),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // Header
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Colors.blue.shade800, Colors.blue.shade600],
+                ),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.school_rounded, color: Colors.white, size: 22),
+                  SizedBox(width: 10),
+                  Text('Menu Moodle',
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+                ],
+              ),
+            ),
+            // Menu items
+            _moodleMenuItem(
+              icon: Icons.dashboard_rounded,
+              color: Colors.blue.shade700,
+              title: 'Dashboard',
+              subtitle: 'Halaman utama e-learning',
+              onTap: () {
+                Navigator.pop(ctx);
+                _webController.loadRequest(Uri.parse('$moodleUrl/my/'));
+              },
+            ),
+            _moodleMenuItem(
+              icon: Icons.book_rounded,
+              color: Colors.green.shade700,
+              title: 'Kursusku',
+              subtitle: 'Daftar kursus yang diikuti',
+              onTap: () {
+                Navigator.pop(ctx);
+                _webController.loadRequest(Uri.parse('$moodleUrl/my/courses.php'));
+              },
+            ),
+            _moodleMenuItem(
+              icon: Icons.person_rounded,
+              color: Colors.orange.shade700,
+              title: 'Profil',
+              subtitle: 'Lihat profil pengguna',
+              onTap: () {
+                Navigator.pop(ctx);
+                _webController.runJavaScript('''
+                  (function() {
+                    var profileLink = document.querySelector('a[href*="/user/profile.php"], a[data-title="profile,moodle"]');
+                    if (profileLink) { profileLink.click(); }
+                    else { window.location.href = "$moodleUrl/user/profile.php"; }
+                  })();
+                ''');
+              },
+            ),
+            _moodleMenuItem(
+              icon: Icons.calendar_month_rounded,
+              color: Colors.purple.shade700,
+              title: 'Kalender',
+              subtitle: 'Jadwal & event',
+              onTap: () {
+                Navigator.pop(ctx);
+                _webController.loadRequest(Uri.parse('$moodleUrl/calendar/view.php'));
+              },
+            ),
+            const Divider(height: 1),
+            _moodleMenuItem(
+              icon: Icons.logout_rounded,
+              color: Colors.red.shade600,
+              title: 'Logout',
+              subtitle: 'Keluar dari Moodle',
+              onTap: () {
+                Navigator.pop(ctx);
+                _confirmMoodleLogout(moodleUrl);
+              },
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _moodleMenuItem({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          child: Row(
+            children: [
+              Container(
+                width: 40, height: 40,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: color, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 14,
+                      color: color == Colors.red.shade600 ? Colors.red.shade600 : Colors.grey.shade800,
+                    )),
+                    Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded, color: Colors.grey.shade400, size: 20),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _confirmMoodleLogout(String moodleUrl) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.logout_rounded, color: Colors.red, size: 24),
+            SizedBox(width: 10),
+            Text('Logout Moodle?', style: TextStyle(fontSize: 18)),
+          ],
+        ),
+        content: const Text('Anda akan keluar dari akun Moodle. Pastikan semua jawaban sudah tersimpan.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // Moodle logout via sesskey extraction
+              _webController.runJavaScript('''
+                (function() {
+                  var sessKeyEl = document.querySelector('[name="sesskey"]');
+                  var sessKey = sessKeyEl ? sessKeyEl.value : null;
+                  if (!sessKey) {
+                    var match = document.cookie.match(/MoodleSession=([^;]+)/);
+                    var links = document.querySelectorAll('a[href*="logout.php"]');
+                    if (links.length > 0) { links[0].click(); return; }
+                  }
+                  if (sessKey) {
+                    window.location.href = "$moodleUrl/login/logout.php?sesskey=" + sessKey;
+                  } else {
+                    window.location.href = "$moodleUrl/login/logout.php";
+                  }
+                })();
+              ''');
+            },
+            icon: const Icon(Icons.logout_rounded, size: 18),
+            label: const Text('Logout'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+        ],
       ),
     );
   }
