@@ -36,6 +36,7 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "id.sch.man1metro.examanmet/lockdown"
     private val EVENT_CHANNEL = "id.sch.man1metro.examanmet/security_events"
     private var isLockdownActive = false
+    private var pinningAccepted = false  // Track if user accepted screen pinning
     private val handler = Handler(Looper.getMainLooper())
     private var securityEventSink: EventChannel.EventSink? = null
     private var alertMediaPlayer: MediaPlayer? = null
@@ -186,6 +187,7 @@ class MainActivity : FlutterActivity() {
                 "startKioskMode" -> {
                     try {
                         isLockdownActive = true
+                        pinningAccepted = false
                         runOnUiThread {
                             hideSystemUI()
                             // Start screen pinning ONCE — user sees 1 dialog then app is locked
@@ -638,12 +640,19 @@ class MainActivity : FlutterActivity() {
             hideSystemUI()
             // Stop bring-to-front retries since we're back in foreground
             handler.removeCallbacks(bringToFrontRunnable)
-            // Re-pin the screen if it was unpinned (e.g., user pressed back+recent)
-            try {
-                if (!isInLockTaskMode()) {
+
+            // Track if user accepted screen pinning
+            if (isInLockTaskMode()) {
+                pinningAccepted = true
+            }
+
+            // Only re-pin if user previously accepted pinning and it got unpinned
+            // Do NOT re-show the dialog if user never accepted / device doesn't support it
+            if (pinningAccepted && !isInLockTaskMode()) {
+                try {
                     startLockTask()
-                }
-            } catch (_: Exception) {}
+                } catch (_: Exception) {}
+            }
         }
     }
 
