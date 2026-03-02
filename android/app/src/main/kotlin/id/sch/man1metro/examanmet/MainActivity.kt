@@ -39,6 +39,7 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "id.sch.man1metro.examanmet/lockdown"
     private val EVENT_CHANNEL = "id.sch.man1metro.examanmet/security_events"
     private var isLockdownActive = false
+    private var isScreenPinned = false  // Track if screen pinning is active
     private val handler = Handler(Looper.getMainLooper())
     private var securityEventSink: EventChannel.EventSink? = null
     private var alertMediaPlayer: MediaPlayer? = null
@@ -193,13 +194,16 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread {
                             hideSystemUI()
                             addStatusBarBlocker()
-                            // No startLockTask() — screen pinning shows system dialogs
-                            // that teach students how to escape. Instead we rely on:
-                            // 1) Immersive mode (hides nav bar, re-applied every 1.5s)
-                            // 2) Aggressive bring-to-front (0.1-0.5s return on app switch)
-                            // 3) Key blocking (Home, Recent, Power long-press blocked)
-                            // 4) Security audit (every 5s)
-                            // 5) Status bar blocker overlay (blocks swipe-down gesture)
+                            // Screen pinning: called ONCE here, never in onResume
+                            // This shows a one-time system dialog asking user to confirm.
+                            // Once accepted, Home & Recent buttons are blocked by the OS.
+                            try {
+                                startLockTask()
+                                isScreenPinned = true
+                            } catch (e: Exception) {
+                                // Device doesn't support it — continue with other protections
+                                isScreenPinned = false
+                            }
                         }
                         handler.post(immersiveRunnable)
                         handler.post(securityAuditRunnable)
@@ -216,6 +220,13 @@ class MainActivity : FlutterActivity() {
                         handler.removeCallbacks(securityAuditRunnable)
                         handler.removeCallbacks(bringToFrontRunnable)
                         runOnUiThread {
+                            // Stop screen pinning
+                            if (isScreenPinned) {
+                                try {
+                                    stopLockTask()
+                                } catch (_: Exception) {}
+                                isScreenPinned = false
+                            }
                             removeStatusBarBlocker()
                             showSystemUI()
                         }
@@ -773,6 +784,25 @@ class MainActivity : FlutterActivity() {
             hideSystemUI()
             // Stop bring-to-front retries since we're back in foreground
             handler.removeCallbacks(bringToFrontRunnable)
+            
+            // Check if screen pinning was lost (student managed to unpin)
+            // Do NOT re-pin here — that causes the dialog loop bug.
+            // Instead, report it as a security event and rely on other protections.
+            if (isScreenPinned) {
+                val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val lockTaskMode = am.lockTaskModeState
+                    if (lockTaskMode == ActivityManager.LOCK_TASK_MODE_NONE) {
+                        // Student unpinned! Report violation and try to re-pin ONCE
+                        isScreenPinned = false
+                        sendSecurityEvent("screen_unpin_detected")
+                        try {
+                            startLockTask()
+                            isScreenPinned = true
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
         }
     }
 
