@@ -39,7 +39,6 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "id.sch.man1metro.examanmet/lockdown"
     private val EVENT_CHANNEL = "id.sch.man1metro.examanmet/security_events"
     private var isLockdownActive = false
-    private var isScreenPinned = false  // Track if screen pinning is active
     private val handler = Handler(Looper.getMainLooper())
     private var securityEventSink: EventChannel.EventSink? = null
     private var alertMediaPlayer: MediaPlayer? = null
@@ -194,16 +193,6 @@ class MainActivity : FlutterActivity() {
                         runOnUiThread {
                             hideSystemUI()
                             addStatusBarBlocker()
-                            // Screen pinning: called ONCE here, never in onResume
-                            // This shows a one-time system dialog asking user to confirm.
-                            // Once accepted, Home & Recent buttons are blocked by the OS.
-                            try {
-                                startLockTask()
-                                isScreenPinned = true
-                            } catch (e: Exception) {
-                                // Device doesn't support it — continue with other protections
-                                isScreenPinned = false
-                            }
                         }
                         handler.post(immersiveRunnable)
                         handler.post(securityAuditRunnable)
@@ -220,13 +209,6 @@ class MainActivity : FlutterActivity() {
                         handler.removeCallbacks(securityAuditRunnable)
                         handler.removeCallbacks(bringToFrontRunnable)
                         runOnUiThread {
-                            // Stop screen pinning
-                            if (isScreenPinned) {
-                                try {
-                                    stopLockTask()
-                                } catch (_: Exception) {}
-                                isScreenPinned = false
-                            }
                             removeStatusBarBlocker()
                             showSystemUI()
                         }
@@ -782,27 +764,9 @@ class MainActivity : FlutterActivity() {
         super.onResume()
         if (isLockdownActive) {
             hideSystemUI()
+            collapseStatusBar()
             // Stop bring-to-front retries since we're back in foreground
             handler.removeCallbacks(bringToFrontRunnable)
-            
-            // Check if screen pinning was lost (student managed to unpin)
-            // Do NOT re-pin here — that causes the dialog loop bug.
-            // Instead, report it as a security event and rely on other protections.
-            if (isScreenPinned) {
-                val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    val lockTaskMode = am.lockTaskModeState
-                    if (lockTaskMode == ActivityManager.LOCK_TASK_MODE_NONE) {
-                        // Student unpinned! Report violation and try to re-pin ONCE
-                        isScreenPinned = false
-                        sendSecurityEvent("screen_unpin_detected")
-                        try {
-                            startLockTask()
-                            isScreenPinned = true
-                        } catch (_: Exception) {}
-                    }
-                }
-            }
         }
     }
 
@@ -824,6 +788,10 @@ class MainActivity : FlutterActivity() {
      * First 5 times: fast 200ms intervals. Then: persistent 500ms intervals until app is back.
      * NEVER gives up — keeps retrying until app returns to foreground (onResume stops it).
      */
+    /**
+     * Runnable that aggressively brings app to front with retries.
+     * Ultra-fast first retries, never gives up until onResume stops it.
+     */
     private val bringToFrontRunnable = object : Runnable {
         private var retryCount = 0
         override fun run() {
@@ -835,11 +803,11 @@ class MainActivity : FlutterActivity() {
             bringAppToFront()
             hideSystemUI()
             retryCount++
-            // Ultra-fast first 3 retries (100ms), then fast (200ms), then persistent (500ms)
+            // Ultra-fast first 5 retries (50ms), then fast (150ms), then persistent (300ms)
             val delay = when {
-                retryCount < 3 -> 100L
-                retryCount < 8 -> 200L
-                else -> 500L
+                retryCount < 5 -> 50L    // First 250ms: 5 attempts @ 50ms
+                retryCount < 15 -> 150L  // Next 1.5s: 10 attempts @ 150ms  
+                else -> 300L             // Then: persistent @ 300ms
             }
             handler.postDelayed(this, delay)
         }
@@ -852,13 +820,17 @@ class MainActivity : FlutterActivity() {
         super.onStop()
         if (isLockdownActive) {
             bringAppToFront()
-            // Schedule additional retries in case first attempt fails
+            collapseStatusBar()
+            // Schedule rapid retries
             handler.postDelayed({
-                if (isLockdownActive) bringAppToFront()
+                if (isLockdownActive) { bringAppToFront(); collapseStatusBar() }
+            }, 50)
+            handler.postDelayed({
+                if (isLockdownActive) { bringAppToFront(); hideSystemUI() }
             }, 150)
             handler.postDelayed({
                 if (isLockdownActive) bringAppToFront()
-            }, 400)
+            }, 300)
         }
     }
 
@@ -903,17 +875,32 @@ class MainActivity : FlutterActivity() {
 
     /**
      * Force bring this app back to the foreground.
+     * Uses multiple methods for maximum compatibility:
+     * 1) AppTask.moveToFront() - preferred method
+     * 2) ActivityManager.moveTaskToFront() - fallback with MOVE_TASK_WITH_HOME
+     * 3) Launch intent - last resort
      */
     private fun bringAppToFront() {
         try {
             val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            
+            // Method 1: AppTask.moveToFront()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 val tasks = activityManager.appTasks
                 if (tasks.isNotEmpty()) {
                     tasks[0].moveToFront()
                 }
             }
+            
+            // Method 2: moveTaskToFront with MOVE_TASK_WITH_HOME flag
+            // This ensures our task replaces the home screen
+            @Suppress("DEPRECATION")
+            val runningTasks = activityManager.getRunningTasks(1)
+            if (runningTasks.isNotEmpty()) {
+                activityManager.moveTaskToFront(taskId, ActivityManager.MOVE_TASK_WITH_HOME)
+            }
         } catch (e: Exception) {
+            // Method 3: Launch intent as last resort
             try {
                 val intent = Intent(this, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
