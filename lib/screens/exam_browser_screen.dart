@@ -274,58 +274,76 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     }
   }
 
-  /// Extract Moodle username and fullname from the loaded page via JavaScript
+  /// Extract Moodle username (NISN) and fullname from the loaded page via JavaScript
   Future<void> _extractMoodleUser() async {
     try {
       final result = await _webController.runJavaScriptReturningResult('''
         (function() {
           try {
-            // Method 1: Moodle user menu (most reliable)
-            var userText = document.querySelector('.usertext');
-            if (userText) {
-              var fullname = userText.textContent.trim();
-              // Try to get username from profile link
-              var profileLink = document.querySelector('a[href*="/user/profile.php"]');
-              var username = '';
-              if (profileLink) {
-                var match = profileLink.href.match(/id=(\\d+)/);
-                if (match) username = match[1];
+            var username = '';
+            var fullname = '';
+
+            // === Priority 1: M.cfg.username (Moodle JS config — most reliable) ===
+            // This contains the actual login username (NISN), available on ALL pages when logged in
+            if (typeof M !== 'undefined' && M.cfg) {
+              if (M.cfg.username && M.cfg.username !== '' && M.cfg.username !== 'guest') {
+                username = M.cfg.username;  // This is the NISN
               }
-              // Try login info
-              var loginInfo = document.querySelector('.logininfo a[href*="/user/profile.php"]');
-              if (loginInfo && !username) {
-                var m = loginInfo.href.match(/id=(\\d+)/);
-                if (m) username = m[1];
+              // M.cfg.fullname available in some Moodle versions
+              if (M.cfg.fullname) {
+                fullname = M.cfg.fullname;
               }
-              return JSON.stringify({type: 'moodle_user', fullname: fullname, username: username});
             }
 
-            // Method 2: Moodle 4.x user menu
-            var userFullname = document.querySelector('.userfullname');
-            if (userFullname) {
-              return JSON.stringify({type: 'moodle_user', fullname: userFullname.textContent.trim(), username: ''});
+            // === Priority 2: Get fullname from user menu ===
+            if (!fullname) {
+              // Moodle 3.x
+              var userText = document.querySelector('.usertext');
+              if (userText) fullname = userText.textContent.trim();
             }
-
-            // Method 3: Check M.cfg for username (Moodle JS config)
-            if (typeof M !== 'undefined' && M.cfg && M.cfg.sesskey) {
-              var uname = '';
-              var fname = '';
-              // Try requirejs module
-              try {
-                var userEl = document.querySelector('[data-userid]');
-                if (userEl) uname = userEl.getAttribute('data-userid');
-              } catch(e) {}
+            if (!fullname) {
+              // Moodle 4.x
+              var userFullname = document.querySelector('.userfullname');
+              if (userFullname) fullname = userFullname.textContent.trim();
+            }
+            if (!fullname) {
+              // Moodle user button
               var menuText = document.querySelector('.userbutton .usertext, .userbutton .userbutton-name');
-              if (menuText) fname = menuText.textContent.trim();
-              if (uname || fname) {
-                return JSON.stringify({type: 'moodle_user', fullname: fname, username: uname});
+              if (menuText) fullname = menuText.textContent.trim();
+            }
+
+            // === Priority 3: logininfo text (e.g. "Anda login sebagai USERNAME") ===
+            if (!username) {
+              var loginInfo = document.querySelector('.logininfo');
+              if (loginInfo) {
+                var loginText = loginInfo.textContent.trim();
+                // Pattern: "You are logged in as XXXX" or "Anda login sebagai XXXX"
+                var m = loginText.match(/(?:logged in as|login sebagai|masuk sebagai)\\s+(.+)/i);
+                if (m) {
+                  var extracted = m[1].replace(/[\\(\\)]/g, '').trim();
+                  // Remove "Log out" / "Keluar" suffix
+                  extracted = extracted.replace(/\\s*(Log out|Keluar|Logout).*\$/i, '').trim();
+                  if (extracted) username = extracted;
+                }
               }
             }
 
-            // Method 4: Login page - extract from username field if filled
-            var usernameInput = document.querySelector('#username');
-            if (usernameInput && usernameInput.value) {
-              return JSON.stringify({type: 'moodle_user', fullname: '', username: usernameInput.value});
+            // === Priority 4: Login page username field ===
+            if (!username) {
+              var usernameInput = document.querySelector('#username');
+              if (usernameInput && usernameInput.value) {
+                username = usernameInput.value;
+              }
+            }
+
+            // === Priority 5: data-username attribute (some themes) ===
+            if (!username) {
+              var userEl = document.querySelector('[data-username]');
+              if (userEl) username = userEl.getAttribute('data-username');
+            }
+
+            if (username || fullname) {
+              return JSON.stringify({type: 'moodle_user', fullname: fullname, username: username});
             }
 
             return JSON.stringify({type: 'no_user'});
