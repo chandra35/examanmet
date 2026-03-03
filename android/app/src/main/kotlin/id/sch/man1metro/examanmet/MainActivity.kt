@@ -39,6 +39,8 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "id.sch.man1metro.examanmet/lockdown"
     private val EVENT_CHANNEL = "id.sch.man1metro.examanmet/security_events"
     private var isLockdownActive = false
+    private var isExiting = false  // Prevents bring-to-front during app exit
+    private var userLeaveHintFired = false  // Distinguishes Home vs Recent button
     private val handler = Handler(Looper.getMainLooper())
     private var securityEventSink: EventChannel.EventSink? = null
     private var alertMediaPlayer: MediaPlayer? = null
@@ -190,6 +192,7 @@ class MainActivity : FlutterActivity() {
                 "startKioskMode" -> {
                     try {
                         isLockdownActive = true
+                        isExiting = false  // Reset exit flag when starting lockdown
                         runOnUiThread {
                             hideSystemUI()
                             addStatusBarBlocker()
@@ -205,13 +208,14 @@ class MainActivity : FlutterActivity() {
                 "stopKioskMode" -> {
                     try {
                         isLockdownActive = false
-                        handler.removeCallbacks(immersiveRunnable)
-                        handler.removeCallbacks(securityAuditRunnable)
-                        handler.removeCallbacks(bringToFrontRunnable)
+                        isExiting = true  // Prevent ALL bring-to-front after exit
+                        // Remove ALL pending handler callbacks to prevent any lingering actions
+                        handler.removeCallbacksAndMessages(null)
                         runOnUiThread {
                             removeStatusBarBlocker()
                             showSystemUI()
                         }
+                        // Re-post only the non-lockdown related runnables if needed
                         result.success(true)
                     } catch (e: Exception) {
                         result.success(false)
@@ -736,6 +740,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        if (isExiting) return  // Don't interfere during exit
         if (hasFocus && isLockdownActive) {
             hideSystemUI()
         } else if (!hasFocus && isLockdownActive) {
@@ -745,13 +750,13 @@ class MainActivity : FlutterActivity() {
             hideSystemUI()
             // Schedule rapid retries
             handler.postDelayed({
-                if (isLockdownActive) {
+                if (isLockdownActive && !isExiting) {
                     collapseStatusBar()
                     hideSystemUI()
                 }
             }, 50)
             handler.postDelayed({
-                if (isLockdownActive) {
+                if (isLockdownActive && !isExiting) {
                     collapseStatusBar()
                     hideSystemUI()
                     bringAppToFront()
@@ -762,7 +767,8 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (isLockdownActive) {
+        userLeaveHintFired = false  // Reset for next pause cycle
+        if (isLockdownActive && !isExiting) {
             hideSystemUI()
             collapseStatusBar()
             // Stop bring-to-front retries since we're back in foreground
@@ -771,12 +777,31 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
+     * Called when user intentionally leaves the activity (Home button).
+     * NOT called for incoming calls, system dialogs, or Recent button.
+     * This works on ALL Android versions including 12+ where ACTION_CLOSE_SYSTEM_DIALOGS is deprecated.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (isLockdownActive && !isExiting) {
+            userLeaveHintFired = true
+            sendSecurityEvent("home_pressed")
+        }
+    }
+
+    /**
      * When app is paused (user somehow left), aggressively bring it back to front.
-     * Uses multiple retries with short intervals to ensure app returns quickly.
+     * Also sends security events for Home/Recent detection on Android 12+.
      */
     override fun onPause() {
         super.onPause()
-        if (isLockdownActive) {
+        if (isLockdownActive && !isExiting) {
+            // Send security event for violation tracking
+            // onUserLeaveHint already sent "home_pressed" if it was Home button
+            if (!userLeaveHintFired) {
+                // Not Home — likely Recent button, phone call, or system dialog
+                sendSecurityEvent("recent_pressed")
+            }
             // Aggressive multi-retry bring-to-front — start IMMEDIATELY
             handler.removeCallbacks(bringToFrontRunnable)
             handler.post(bringToFrontRunnable)  // No delay — start instantly
@@ -795,7 +820,7 @@ class MainActivity : FlutterActivity() {
     private val bringToFrontRunnable = object : Runnable {
         private var retryCount = 0
         override fun run() {
-            if (!isLockdownActive) {
+            if (!isLockdownActive || isExiting) {
                 retryCount = 0
                 return
             }
@@ -818,18 +843,18 @@ class MainActivity : FlutterActivity() {
      */
     override fun onStop() {
         super.onStop()
-        if (isLockdownActive) {
+        if (isLockdownActive && !isExiting) {
             bringAppToFront()
             collapseStatusBar()
             // Schedule rapid retries
             handler.postDelayed({
-                if (isLockdownActive) { bringAppToFront(); collapseStatusBar() }
+                if (isLockdownActive && !isExiting) { bringAppToFront(); collapseStatusBar() }
             }, 50)
             handler.postDelayed({
-                if (isLockdownActive) { bringAppToFront(); hideSystemUI() }
+                if (isLockdownActive && !isExiting) { bringAppToFront(); hideSystemUI() }
             }, 150)
             handler.postDelayed({
-                if (isLockdownActive) bringAppToFront()
+                if (isLockdownActive && !isExiting) bringAppToFront()
             }, 300)
         }
     }

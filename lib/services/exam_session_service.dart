@@ -113,11 +113,11 @@ class ExamSessionService {
     _moodleFullname = fullname;
   }
 
-  /// Start heartbeat timer (every 10 seconds for near-real-time lock/unlock)
+  /// Start heartbeat timer (every 30 seconds — balanced between real-time and server load)
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(
-      const Duration(seconds: 10),
+      const Duration(seconds: 30),
       (_) => _sendHeartbeat(),
     );
   }

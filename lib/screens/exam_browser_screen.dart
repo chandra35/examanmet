@@ -46,8 +46,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   Timer? _killAppsTimer;
   int _violationCount = 0;
   static const int _maxViolations = 5;
+  static const int _autoLockThreshold = 3;  // Client-side auto-lock (matches server)
   bool _securityWarningShown = false;
   bool _bluetoothWarningShown = false;
+  bool _isExiting = false;  // Prevents lifecycle hooks from fighting exit
+  DateTime? _lastNativeViolationTime;  // Debounce to avoid double-counting
   bool _headsetWarningShown = false;
   bool _rootWarningShown = false;
   bool _isRemoteLocked = false;
@@ -86,12 +89,25 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
 
+    // Don't process lifecycle events during exit
+    if (_isExiting) return;
+
     if (state == AppLifecycleState.paused) {
       // Only count as violation when app is fully paused (user switched away)
       // Do NOT count 'inactive' — it triggers on WebView dropdowns, popups,
       // system dialogs, and Moodle matching question answer selectors
+      //
+      // Debounce: skip if native side already reported this violation recently
+      // (home_pressed/recent_pressed events from onUserLeaveHint/onPause arrive faster)
+      final now = DateTime.now();
+      if (_lastNativeViolationTime != null &&
+          now.difference(_lastNativeViolationTime!).inMilliseconds < 3000) {
+        // Native event already reported this — skip to avoid double-counting
+        return;
+      }
       _violationCount++;
       _sessionService.reportViolation('app_switch', detail: 'App went to background');
+      _checkAutoLock();  // Client-side auto-lock check
     } else if (state == AppLifecycleState.resumed) {
       // Re-enable lockdown when coming back
       _lockdownService.enableLockdown();
@@ -844,7 +860,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     final hasFloating = await _lockdownService.hasFloatingApps();
     if (hasFloating && mounted) {
+      _violationCount++;
       _sessionService.reportViolation('floating_app', detail: 'Floating/overlay app detected');
+      _checkAutoLock();
       _showWarningBanner(
         icon: Icons.layers_clear_rounded,
         color: Colors.deepOrange,
@@ -853,15 +871,38 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     }
   }
 
+  /// Client-side auto-lock: if violations reach threshold, lock immediately
+  /// without waiting for server response. This ensures lock works even when:
+  /// - Network is slow/unreliable during rapid app-switch cycles
+  /// - Session failed to start (no session_id)
+  /// - Server response gets lost
+  void _checkAutoLock() {
+    if (_isRemoteLocked || !mounted) return;  // Already locked
+
+    if (_violationCount >= _autoLockThreshold) {
+      debugPrint('[AUTO-LOCK] Client-side lock triggered: $_violationCount violations >= $_autoLockThreshold threshold');
+      setState(() {
+        _isRemoteLocked = true;
+        _remoteLockReason = 'Otomatis dikunci: $_violationCount pelanggaran terdeteksi';
+      });
+      // Play alert sound
+      if (_config?.alertSoundOnViolation == true) {
+        _lockdownService.playAlertSound();
+      }
+    }
+  }
+
   /// Handle real-time security events from native Android
   void _handleSecurityEvent(String event) {
-    if (!mounted) return;
+    if (!mounted || _isExiting) return;
     debugPrint('[SECURITY_EVENT] $event');
 
     // Increment violation for critical events
     if (event == 'home_pressed' || event == 'recent_pressed' || event == 'multi_window_detected') {
       _violationCount++;
+      _lastNativeViolationTime = DateTime.now();  // Mark time to debounce lifecycle handler
       _sessionService.reportViolation('app_switch', detail: 'Security event: $event');
+      _checkAutoLock();  // Client-side auto-lock check
       // Play alert sound on violation
       if (_config?.alertSoundOnViolation == true) {
         _lockdownService.playAlertSound();
@@ -1118,12 +1159,13 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
   /// Exit app completely due to security threat
   Future<void> _exitAppDueToSecurity() async {
+    _isExiting = true;
     // Stop alert sound
     _lockdownService.stopAlertSound();
     // Disable lockdown so app can exit cleanly
     await _lockdownService.disableLockdown();
-    // Close the app
-    SystemNavigator.pop();
+    // Force kill the app process — exit(0) is reliable unlike SystemNavigator.pop()
+    exit(0);
   }
 
   /// Reusable blocking exit dialog for security violations (Bluetooth, Headset, etc.)
@@ -1651,12 +1693,12 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   }
 
   Future<void> _exitExam() async {
+    _isExiting = true;
     await _sessionService.endSession();
     await _lockdownService.disableLockdown();
     await WakelockPlus.disable();
-    if (mounted) {
-      SystemNavigator.pop();
-    }
+    // Force kill the app process — exit(0) is reliable unlike SystemNavigator.pop()
+    exit(0);
   }
 
   @override
