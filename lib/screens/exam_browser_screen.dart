@@ -400,14 +400,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
   /// Show a blocking dialog for urgent admin notifications
   void _showUrgentNotificationDialog(String title, String message) {
-    _showAnimatedDialog(
+    _showWarningBanner(
       icon: Icons.notification_important_rounded,
-      iconColor: Colors.red,
-      iconBgColor: Colors.red.shade50,
-      title: title,
-      message: message,
-      buttonText: 'Mengerti',
-      buttonColor: Colors.red,
+      color: Colors.red,
+      text: '$title: $message',
+      durationSeconds: 6,
     );
   }
 
@@ -829,39 +826,17 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       _lockdownService.playAlertSound();
     }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-
-      if (_violationCount >= _maxViolations) {
-        _showAnimatedDialog(
-          icon: Icons.gpp_bad_rounded,
-          iconColor: Colors.white,
-          iconBgColor: Colors.red,
-          title: 'PELANGGARAN BERAT!',
-          titleColor: Colors.red,
-          message:
-              'Anda telah mencoba keluar dari aplikasi ujian sebanyak $_violationCount kali.\n\n'
-              'Tindakan ini telah dicatat dan akan dilaporkan ke pengawas ujian.\n\n'
-              'Jika terus melanggar, ujian Anda dapat dibatalkan.',
-          buttonText: 'Saya Mengerti',
-          buttonColor: Colors.red,
-        );
-      } else {
-        _showAnimatedDialog(
-          icon: Icons.warning_amber_rounded,
-          iconColor: Colors.white,
-          iconBgColor: Colors.orange,
-          title: 'PERINGATAN!',
-          titleColor: Colors.orange.shade800,
-          message:
-              'Terdeteksi percobaan keluar dari aplikasi ujian!\n\n'
-              'Pelanggaran: $_violationCount dari $_maxViolations\n\n'
-              'Anda TIDAK diperbolehkan membuka aplikasi lain selama ujian berlangsung.',
-          buttonText: 'Kembali ke Ujian',
-          buttonColor: Colors.orange.shade700,
-        );
-      }
-    });
+    // Use lightweight non-blocking banner instead of dialog
+    // Dialog blocks the screen and conflicts with bring-to-front / screen pinning
+    _showWarningBanner(
+      icon: _violationCount >= _maxViolations
+          ? Icons.gpp_bad_rounded
+          : Icons.warning_amber_rounded,
+      color: _violationCount >= _maxViolations ? Colors.red : Colors.orange,
+      text: _violationCount >= _maxViolations
+          ? 'PELANGGARAN BERAT! ($_violationCount/$_maxViolations) - Dilaporkan ke pengawas'
+          : 'Peringatan! Percobaan keluar terdeteksi ($_violationCount/$_maxViolations)',
+    );
   }
 
   Future<void> _checkForFloatingApps() async {
@@ -870,17 +845,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     final hasFloating = await _lockdownService.hasFloatingApps();
     if (hasFloating && mounted) {
       _sessionService.reportViolation('floating_app', detail: 'Floating/overlay app detected');
-      _showAnimatedDialog(
+      _showWarningBanner(
         icon: Icons.layers_clear_rounded,
-        iconColor: Colors.white,
-        iconBgColor: Colors.deepOrange,
-        title: 'Aplikasi Overlay Terdeteksi',
-        titleColor: Colors.deepOrange,
-        message:
-            'Terdeteksi aplikasi floating/overlay yang sedang berjalan.\n\n'
-            'Silakan tutup semua aplikasi floating untuk melanjutkan ujian.',
-        buttonText: 'Mengerti',
-        buttonColor: Colors.deepOrange,
+        color: Colors.deepOrange,
+        text: 'Aplikasi overlay terdeteksi! Tutup semua aplikasi floating.',
       );
     }
   }
@@ -1324,17 +1292,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   }
 
   void _showBlockedUrlDialog(String url) {
-    _showAnimatedDialog(
+    _showWarningBanner(
       icon: Icons.block_rounded,
-      iconColor: Colors.white,
-      iconBgColor: Colors.red.shade400,
-      title: 'URL Diblokir',
-      titleColor: Colors.red,
-      message:
-          'Anda tidak diperbolehkan mengakses:\n$url\n\n'
-          'Hanya halaman Moodle ujian yang diizinkan.',
-      buttonText: 'OK',
-      buttonColor: Colors.red.shade400,
+      color: Colors.red.shade400,
+      text: 'URL diblokir: hanya halaman Moodle ujian yang diizinkan.',
     );
   }
 
@@ -1431,21 +1392,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         _lockdownService.playAlertSound();
       }
 
-      _showAnimatedDialog(
+      _showWarningBanner(
         icon: Icons.warning_rounded,
-        iconColor: Colors.white,
-        iconBgColor: Colors.red.shade900,
-        title: 'PERANGKAT DI-ROOT!',
-        titleColor: Colors.red.shade900,
-        message:
-            'Perangkat Anda terdeteksi telah di-ROOT!\n\n'
-            'Perangkat yang di-root dapat membypass keamanan ujian '
-            'dan dianggap sebagai ancaman serius.\n\n'
-            'Informasi ini telah dicatat dan akan dilaporkan '
-            'ke pengawas ujian.\n\n'
-            'Gunakan perangkat yang tidak di-root untuk ujian.',
-        buttonText: 'Saya Mengerti',
-        buttonColor: Colors.red.shade900,
+        color: Colors.red.shade900,
+        text: 'Perangkat di-ROOT terdeteksi! Dilaporkan ke pengawas.',
+        durationSeconds: 6,
       );
     }
   }
@@ -2620,6 +2571,46 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     ''');
   }
 
+  // ==================== NON-BLOCKING WARNING BANNER ====================
+
+  /// Lightweight non-blocking warning banner shown at top of screen.
+  /// Auto-dismisses after [durationSeconds]. Does NOT block the exam screen.
+  /// Replaces heavy dialog popups that caused conflicts with bring-to-front
+  /// and screen pinning.
+  OverlayEntry? _currentBanner;
+
+  void _showWarningBanner({
+    required IconData icon,
+    required Color color,
+    required String text,
+    int durationSeconds = 4,
+  }) {
+    if (!mounted) return;
+
+    // Remove previous banner if still showing
+    _currentBanner?.remove();
+    _currentBanner = null;
+
+    final overlay = Overlay.of(context);
+
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (context) => _WarningBannerWidget(
+        icon: icon,
+        color: color,
+        text: text,
+        durationSeconds: durationSeconds,
+        onDismiss: () {
+          entry.remove();
+          if (_currentBanner == entry) _currentBanner = null;
+        },
+      ),
+    );
+
+    _currentBanner = entry;
+    overlay.insert(entry);
+  }
+
   // ==================== BEAUTIFUL ANIMATED DIALOGS ====================
 
   /// Show a smooth animated dialog with icon, title, message and single button
@@ -2927,4 +2918,120 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   }
 }
 
+/// Lightweight animated warning banner widget.
+/// Slides down from top, auto-dismisses, non-blocking.
+class _WarningBannerWidget extends StatefulWidget {
+  final IconData icon;
+  final Color color;
+  final String text;
+  final int durationSeconds;
+  final VoidCallback onDismiss;
+
+  const _WarningBannerWidget({
+    required this.icon,
+    required this.color,
+    required this.text,
+    required this.durationSeconds,
+    required this.onDismiss,
+  });
+
+  @override
+  State<_WarningBannerWidget> createState() => _WarningBannerWidgetState();
+}
+
+class _WarningBannerWidgetState extends State<_WarningBannerWidget>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<Offset> _slideAnimation;
+  late Animation<double> _fadeAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, -1),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+    _fadeAnimation = Tween<double>(begin: 0, end: 1).animate(_controller);
+
+    _controller.forward();
+
+    // Auto-dismiss
+    Future.delayed(Duration(seconds: widget.durationSeconds), () {
+      if (mounted) {
+        _controller.reverse().then((_) {
+          widget.onDismiss();
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 8,
+      left: 12,
+      right: 12,
+      child: SlideTransition(
+        position: _slideAnimation,
+        child: FadeTransition(
+          opacity: _fadeAnimation,
+          child: Material(
+            color: Colors.transparent,
+            child: GestureDetector(
+              onTap: () {
+                _controller.reverse().then((_) => widget.onDismiss());
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: widget.color.withOpacity(0.4),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Icon(widget.icon, color: Colors.white, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        widget.text,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          height: 1.3,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(Icons.close, color: Colors.white70, size: 18),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
