@@ -180,71 +180,62 @@ class _SplashScreenState extends State<SplashScreen> {
       final permissionsChecked = prefs.getBool('permissions_setup_done') ?? false;
 
       if (!permissionsChecked) {
-        // ===== FIRST LAUNCH: Full permission setup =====
-        await _addLine(_BootLine(':: First-time setup — checking permissions...', color: _cyan, delay: Duration(milliseconds: 100)));
+        // ===== FIRST LAUNCH: Non-blocking permission setup =====
+        await _addLine(_BootLine(':: First-time setup...', color: _cyan, delay: Duration(milliseconds: 80)));
 
-        // 1. Overlay permission
+        // 1. Overlay permission — open settings, don't wait
         final hasOverlay = await _lockdownService.hasOverlayPermission();
         if (!hasOverlay) {
-          await _addLine(_BootLine('  Requesting overlay permission...', color: _dimWhite, delay: Duration(milliseconds: 80)));
+          await _addLine(_BootLine('  Opening overlay permission...', color: _dimWhite, delay: Duration(milliseconds: 50)));
           await _lockdownService.requestOverlayPermission();
-          await Future.delayed(const Duration(seconds: 3));
+          await Future.delayed(const Duration(seconds: 2));
           final granted = await _lockdownService.hasOverlayPermission();
-          await _addLine(_BootLine(granted ? '  [  OK  ] Overlay granted' : '  [ WARN ] Overlay denied', color: granted ? _green : _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
+          await _addLine(_BootLine(granted ? '  [  OK  ] Overlay' : '  [ SKIP ] Overlay (can grant later)', color: granted ? _green : _yellow, isStatus: true, delay: Duration(milliseconds: 50)));
         } else {
-          await _addLine(_BootLine('  [  OK  ] Overlay permission', color: _green, isStatus: true, delay: Duration(milliseconds: 50)));
+          await _addLine(_BootLine('  [  OK  ] Overlay', color: _green, isStatus: true, delay: Duration(milliseconds: 30)));
         }
 
-        // 2. DND access
+        // 2. DND access — open settings directly, no dialog
         final hasDnd = await _lockdownService.hasDndAccess();
         if (!hasDnd) {
-          await _addLine(_BootLine('  Diperlukan untuk blokir notifikasi & panggilan', color: _dimWhite, delay: Duration(milliseconds: 80)));
-          if (mounted) await _showDndPermissionGuide();
+          await _addLine(_BootLine('  Opening DND access settings...', color: _dimWhite, delay: Duration(milliseconds: 50)));
           await _lockdownService.requestDndAccess();
-          await Future.delayed(const Duration(seconds: 5));
+          await Future.delayed(const Duration(seconds: 2));
           final dndGranted = await _lockdownService.hasDndAccess();
-          await _addLine(_BootLine(dndGranted ? '  [  OK  ] DND access granted' : '  [ WARN ] DND denied', color: dndGranted ? _green : _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
+          await _addLine(_BootLine(dndGranted ? '  [  OK  ] DND' : '  [ SKIP ] DND (can grant later)', color: dndGranted ? _green : _yellow, isStatus: true, delay: Duration(milliseconds: 50)));
         } else {
-          await _addLine(_BootLine('  [  OK  ] DND access', color: _green, isStatus: true, delay: Duration(milliseconds: 50)));
+          await _addLine(_BootLine('  [  OK  ] DND', color: _green, isStatus: true, delay: Duration(milliseconds: 30)));
         }
 
-        // 3. OEM permission
+        // 3. OEM permission — open settings directly, no dialog
         final oemInfo = await _lockdownService.checkOemPermission();
         final needsOem = oemInfo['needs_permission'] == true;
         final hasOemIntent = oemInfo['has_intent'] == true;
-        final manufacturer = (oemInfo['manufacturer'] ?? 'unknown').toString();
 
         if (needsOem && hasOemIntent) {
-          await _addLine(_BootLine('  [ WARN ] ${manufacturer.toUpperCase()} — izin latar belakang', color: _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
-          if (mounted) await _showOemPermissionGuide(manufacturer);
+          await _addLine(_BootLine('  Opening background permission...', color: _dimWhite, delay: Duration(milliseconds: 50)));
           await _lockdownService.openOemPermissionSettings();
-          await Future.delayed(const Duration(seconds: 5));
+          await Future.delayed(const Duration(seconds: 2));
           await _lockdownService.markOemPermissionGranted();
-          await _addLine(_BootLine('  [  OK  ] OEM permission configured', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+          await _addLine(_BootLine('  [  OK  ] Background permission', color: _green, isStatus: true, delay: Duration(milliseconds: 50)));
         } else {
-          await _addLine(_BootLine('  [  OK  ] Device compatibility', color: _green, isStatus: true, delay: Duration(milliseconds: 50)));
+          await _addLine(_BootLine('  [  OK  ] Device compatible', color: _green, isStatus: true, delay: Duration(milliseconds: 30)));
         }
 
         // Mark setup as done — won't prompt again
         await prefs.setBool('permissions_setup_done', true);
       } else {
         // ===== SUBSEQUENT LAUNCHES: Silent fast check =====
-        await _addLine(_BootLine(':: Checking permissions...', color: _cyan, delay: Duration(milliseconds: 60)));
-        final hasOverlay = await _lockdownService.hasOverlayPermission();
-        final hasDnd = await _lockdownService.hasDndAccess();
-        await _addLine(_BootLine('  [  OK  ] Overlay: ${hasOverlay ? "granted" : "denied"}  DND: ${hasDnd ? "granted" : "denied"}', color: hasOverlay && hasDnd ? _green : _yellow, isStatus: true, delay: Duration(milliseconds: 50)));
+        await _addLine(_BootLine(':: Permissions OK', color: _cyan, delay: Duration(milliseconds: 40)));
       }
 
-      // Determine and display protection level (always, fast)
-      await _addLine(_BootLine(':: Protection level...', color: _cyan, delay: Duration(milliseconds: 60)));
-      final oemInfo = await _lockdownService.checkOemPermission();
-      final manufacturer = (oemInfo['manufacturer'] ?? 'unknown').toString();
+      // Determine protection level (always, fast)
       final level = await _lockdownService.determineProtectionLevel();
-      if (level == ProtectionLevel.full) {
-        await _addLine(_BootLine('  [  OK  ] LEVEL 2 (FULL)', color: _green, isStatus: true, delay: Duration(milliseconds: 60)));
-      } else {
-        await _addLine(_BootLine('  [ INFO ] LEVEL 1 (BASIC) — ${manufacturer.toUpperCase()}', color: _yellow, isStatus: true, delay: Duration(milliseconds: 60)));
-      }
+      await _addLine(_BootLine(
+        level == ProtectionLevel.full ? '  [  OK  ] LEVEL 2 (FULL)' : '  [ INFO ] LEVEL 1 (BASIC)',
+        color: level == ProtectionLevel.full ? _green : _yellow,
+        isStatus: true, delay: Duration(milliseconds: 40),
+      ));
     }
 
     setState(() => _bootDone = true);
