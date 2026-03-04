@@ -1079,15 +1079,9 @@ class MainActivity : FlutterActivity() {
         if (isExiting) return
         if (hasFocus && isLockdownActive) {
             hideSystemUI()
-            // Re-pin screen if student somehow unpinned
-            // Cooldown: wait 5s after last attempt to avoid Samsung confirmation loop
-            val now = System.currentTimeMillis()
-            if (!isInLockTaskMode() && (now - lastLockTaskAttempt > 5000)) {
-                try {
-                    startLockTask()
-                    lastLockTaskAttempt = now
-                } catch (_: Exception) {}
-            }
+            // Do NOT re-pin here — calling startLockTask() on focus change
+            // causes infinite dialog loop on Samsung One UI.
+            // Pin once at startKioskMode, that's enough (same as V10CBT approach).
         } else if (!hasFocus && isLockdownActive) {
             // Always re-hide UI and collapse status bar
             collapseStatusBar()
