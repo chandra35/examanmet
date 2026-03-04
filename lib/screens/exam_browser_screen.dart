@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../services/config_service.dart';
 import '../services/lockdown_service.dart';
 import '../services/notification_service.dart';
@@ -56,6 +57,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   bool _isRemoteLocked = false;
   String? _remoteLockReason;
   ProtectionLevel _protectionLevel = ProtectionLevel.basic;
+  String _appVersion = '';
 
   @override
   void initState() {
@@ -123,6 +125,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   }
 
   Future<void> _initExam() async {
+    // Load app version
+    try {
+      final info = await PackageInfo.fromPlatform();
+      _appVersion = info.version;
+    } catch (_) {
+      _appVersion = '?.?.?';
+    }
+
     // Fetch config
     final config = await _configService.fetchConfig();
 
@@ -2250,9 +2260,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                   ),
                 ),
                 const SizedBox(width: 5),
-                const Text(
-                  'EXAM',
-                  style: TextStyle(
+                Text(
+                  'EXAM v$_appVersion',
+                  style: const TextStyle(
                     color: Colors.greenAccent,
                     fontSize: 10,
                     fontWeight: FontWeight.w800,

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../services/config_service.dart';
 import '../services/lockdown_service.dart';
 import '../models/exam_config.dart';
@@ -43,10 +44,13 @@ class _SplashScreenState extends State<SplashScreen> {
   static const _red = Color(0xFFFF1744);
   static const _dimWhite = Color(0xFF78909C);
 
-  // The full boot sequence
-  static final List<_BootLine> _bootSequence = [
+  String _appVersion = '';
+  String _buildNumber = '';
+
+  // The full boot sequence (version placeholder replaced at runtime)
+  static List<_BootLine> _bootSequence(String version) => [
     _BootLine('', delay: Duration(milliseconds: 300)),
-    _BootLine('ExaManmet Secure Exam Environment v3.0.0', color: _green, delay: Duration(milliseconds: 100)),
+    _BootLine('ExaManmet Secure Exam Environment v$version', color: _green, delay: Duration(milliseconds: 100)),
     _BootLine('Copyright (c) 2025 MAN 1 Metro - Digital Education Div.', color: _dimWhite, delay: Duration(milliseconds: 80)),
     _BootLine('', delay: Duration(milliseconds: 200)),
     _BootLine('[    0.0000] Kernel: SEB Engine 3.0 initialized', color: _white, delay: Duration(milliseconds: 60)),
@@ -128,8 +132,18 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _runBootSequence() async {
+    // Load app version
+    try {
+      final info = await PackageInfo.fromPlatform();
+      _appVersion = info.version;
+      _buildNumber = info.buildNumber;
+    } catch (_) {
+      _appVersion = '?.?.?';
+      _buildNumber = '?';
+    }
+
     // Phase 1: Show pre-boot lines (visual only)
-    for (final line in _bootSequence) {
+    for (final line in _bootSequence(_appVersion)) {
       await _addLine(line);
     }
 
