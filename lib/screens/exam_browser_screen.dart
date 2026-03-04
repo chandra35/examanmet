@@ -2363,42 +2363,17 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
               const Spacer(),
 
-              // EXAM lock badge — hide version text on very narrow screens
+              // EXAM lock indicator (dot only, no text)
               Container(
-                padding: EdgeInsets.symmetric(horizontal: badgePadH, vertical: 3),
+                width: 8,
+                height: 8,
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      Colors.green.shade700.withOpacity(0.5),
-                      Colors.green.shade800.withOpacity(0.4),
-                    ],
-                  ),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: Colors.greenAccent.withOpacity(0.3),
-                    width: 0.5,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 5,
-                      height: 5,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.greenAccent,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      isCompact ? 'v$_appVersion' : 'EXAM v$_appVersion',
-                      style: TextStyle(
-                        color: Colors.greenAccent,
-                        fontSize: fontSize,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: isCompact ? 0.5 : 1,
-                      ),
+                  shape: BoxShape.circle,
+                  color: Colors.greenAccent,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.greenAccent.withOpacity(0.5),
+                      blurRadius: 4,
                     ),
                   ],
                 ),
