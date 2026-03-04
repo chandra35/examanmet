@@ -129,9 +129,13 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       _config = config;
     });
 
-    // Initialize lockdown
+    // Initialize lockdown (wrapped in try-catch for OEM compatibility)
     _lockdownService.initialize(config);
-    await _lockdownService.enableLockdown();
+    try {
+      await _lockdownService.enableLockdown();
+    } catch (e) {
+      debugPrint('Lockdown init error (non-fatal): $e');
+    }
 
     // Listen for real-time security events from native
     _lockdownService.onSecurityEvent = _handleSecurityEvent;
@@ -142,19 +146,18 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Setup WebView
     _setupWebView(config);
 
+    // ========================================================
+    // STAGGERED TIMER INITIALIZATION
+    // Timers are started with delays to prevent memory/CPU spike
+    // that triggers Vivo/Oppo/Xiaomi OEM aggressive app killers.
+    // ========================================================
+
+    // Phase 1 (immediate): Essential timers only
     // Start clipboard clearing timer
     if (!config.allowClipboard) {
       _clipboardTimer = Timer.periodic(
         const Duration(seconds: 2),
         (_) => _lockdownService.disableClipboard(),
-      );
-    }
-
-    // Start floating app checker
-    if (Platform.isAndroid) {
-      _floatingCheckTimer = Timer.periodic(
-        const Duration(seconds: 3),
-        (_) => _checkForFloatingApps(),
       );
     }
 
@@ -164,66 +167,86 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       (_) => SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
     );
 
-    // Periodically refresh config from server (keep passwords/settings in sync)
-    _configRefreshTimer = Timer.periodic(
-      const Duration(seconds: 60),
-      (_) => _refreshConfig(),
-    );
+    // Phase 2 (after 2s): Security timers
+    Future.delayed(const Duration(seconds: 2), () {
+      if (!mounted) return;
 
-    // Check for admin notifications every 30 seconds while app is open
-    _notifCheckTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => _checkNotifications(),
-    );
-    // Also check immediately
-    _checkNotifications();
+      // Start floating app checker
+      if (Platform.isAndroid) {
+        _floatingCheckTimer = Timer.periodic(
+          const Duration(seconds: 3),
+          (_) => _checkForFloatingApps(),
+        );
+      }
 
-    // Periodic security audit (check developer options, ADB, accessibility, etc.)
-    _securityAuditTimer = Timer.periodic(
-      const Duration(seconds: 10),
-      (_) => _performSecurityAudit(),
-    );
-    // Run initial audit after short delay
-    Future.delayed(const Duration(seconds: 2), _performSecurityAudit);
-
-    // Kill suspicious background apps on boot & every 15 seconds
-    if (Platform.isAndroid) {
-      _lockdownService.killSuspiciousApps(); // Kill immediately on boot
-      _killAppsTimer = Timer.periodic(
-        const Duration(seconds: 15),
-        (_) => _lockdownService.killSuspiciousApps(),
+      // Periodic security audit (check developer options, ADB, accessibility, etc.)
+      _securityAuditTimer = Timer.periodic(
+        const Duration(seconds: 10),
+        (_) => _performSecurityAudit(),
       );
-    }
+      // Run initial audit
+      _performSecurityAudit();
+    });
 
-    // Bluetooth detection timer (every 8 seconds)
-    if (config.detectBluetooth && Platform.isAndroid) {
-      _bluetoothCheckTimer = Timer.periodic(
-        const Duration(seconds: 8),
-        (_) => _checkBluetooth(),
+    // Phase 3 (after 5s): Network & notification timers
+    Future.delayed(const Duration(seconds: 5), () {
+      if (!mounted) return;
+
+      // Periodically refresh config from server (keep passwords/settings in sync)
+      _configRefreshTimer = Timer.periodic(
+        const Duration(seconds: 60),
+        (_) => _refreshConfig(),
       );
-      // Check immediately after 3 seconds
-      Future.delayed(const Duration(seconds: 3), _checkBluetooth);
-    }
 
-    // Headset detection timer (every 5 seconds)
-    if (config.detectHeadset && Platform.isAndroid) {
-      _headsetCheckTimer = Timer.periodic(
-        const Duration(seconds: 5),
-        (_) => _checkHeadset(),
+      // Check for admin notifications every 30 seconds while app is open
+      _notifCheckTimer = Timer.periodic(
+        const Duration(seconds: 30),
+        (_) => _checkNotifications(),
       );
-      // Check immediately after 3 seconds
-      Future.delayed(const Duration(seconds: 3), _checkHeadset);
-    }
+      _checkNotifications();
+    });
 
-    // Root detection (check once at init)
-    if (config.detectRoot && Platform.isAndroid) {
-      Future.delayed(const Duration(seconds: 2), _checkRoot);
-    }
+    // Phase 4 (after 8s): Heavy/aggressive operations — delayed to avoid OEM kill
+    Future.delayed(const Duration(seconds: 8), () {
+      if (!mounted) return;
 
-    // Keyboard (IME) check — warn if adware keyboard detected
-    if (Platform.isAndroid) {
-      Future.delayed(const Duration(seconds: 3), _checkKeyboard);
-    }
+      // Kill suspicious background apps — delayed to avoid Vivo/OEM security trigger
+      if (Platform.isAndroid) {
+        _lockdownService.killSuspiciousApps();
+        _killAppsTimer = Timer.periodic(
+          const Duration(seconds: 15),
+          (_) => _lockdownService.killSuspiciousApps(),
+        );
+      }
+
+      // Bluetooth detection timer (every 8 seconds)
+      if (config.detectBluetooth && Platform.isAndroid) {
+        _bluetoothCheckTimer = Timer.periodic(
+          const Duration(seconds: 8),
+          (_) => _checkBluetooth(),
+        );
+        _checkBluetooth();
+      }
+
+      // Headset detection timer (every 5 seconds)
+      if (config.detectHeadset && Platform.isAndroid) {
+        _headsetCheckTimer = Timer.periodic(
+          const Duration(seconds: 5),
+          (_) => _checkHeadset(),
+        );
+        _checkHeadset();
+      }
+
+      // Root detection (check once)
+      if (config.detectRoot && Platform.isAndroid) {
+        _checkRoot();
+      }
+
+      // Keyboard (IME) check — warn if adware keyboard detected
+      if (Platform.isAndroid) {
+        _checkKeyboard();
+      }
+    });
 
     // Ping indicator — measure latency every 5 seconds
     _measurePing();

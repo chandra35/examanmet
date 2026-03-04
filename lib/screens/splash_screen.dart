@@ -189,6 +189,35 @@ class _SplashScreenState extends State<SplashScreen> {
           await _addLine(_BootLine('  [ WARN ] Overlay denied - status bar blocker disabled', color: _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
         }
       }
+
+      // Check OEM-specific autostart/background permission (Vivo, Oppo, Xiaomi, etc.)
+      await _addLine(_BootLine('', delay: Duration(milliseconds: 80)));
+      await _addLine(_BootLine(':: Checking device compatibility...', color: _cyan, delay: Duration(milliseconds: 100)));
+      final oemInfo = await _lockdownService.checkOemPermission();
+      final needsOem = oemInfo['needs_permission'] == true;
+      final hasOemIntent = oemInfo['has_intent'] == true;
+      final manufacturer = (oemInfo['manufacturer'] ?? 'unknown').toString();
+
+      if (needsOem && hasOemIntent) {
+        await _addLine(_BootLine('  [ WARN ] ${manufacturer.toUpperCase()} device detected', color: _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
+        await _addLine(_BootLine('  Autostart/background permission may be required', color: _dimWhite, delay: Duration(milliseconds: 80)));
+        await _addLine(_BootLine('  Opening permission settings...', color: _dimWhite, delay: Duration(milliseconds: 80)));
+        
+        // Show guide dialog before opening settings
+        if (mounted) {
+          await _showOemPermissionGuide(manufacturer);
+        }
+
+        await _lockdownService.openOemPermissionSettings();
+        // Wait for user to come back
+        await Future.delayed(const Duration(seconds: 5));
+        await _addLine(_BootLine('  [  OK  ] OEM permission check complete', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+      } else if (needsOem) {
+        await _addLine(_BootLine('  [ INFO ] ${manufacturer.toUpperCase()} device - autostart setting not found', color: _dimWhite, isStatus: true, delay: Duration(milliseconds: 80)));
+        await _addLine(_BootLine('  If app closes unexpectedly, enable autostart manually', color: _yellow, delay: Duration(milliseconds: 80)));
+      } else {
+        await _addLine(_BootLine('  [  OK  ] Device compatibility check passed', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+      }
     }
 
     setState(() => _bootDone = true);
@@ -206,6 +235,193 @@ class _SplashScreenState extends State<SplashScreen> {
     } else {
       Navigator.pushReplacementNamed(context, '/exam');
     }
+  }
+
+  Future<void> _showOemPermissionGuide(String manufacturer) async {
+    if (!mounted) return;
+
+    String title;
+    String instructions;
+    switch (manufacturer.toLowerCase()) {
+      case 'vivo':
+        title = 'Izin Vivo Diperlukan';
+        instructions = 
+            '1. Buka iManager → App Manager → ExaManmet\n'
+            '2. Aktifkan "Autostart"\n'
+            '3. Aktifkan "Izinkan aktivitas latar belakang"\n'
+            '4. Aktifkan "Tampilkan popup saat berjalan di latar"\n\n'
+            'Atau: Setelan → Baterai → Manajemen daya latar belakang → ExaManmet → Jangan batasi';
+        break;
+      case 'xiaomi':
+      case 'redmi':
+      case 'poco':
+        title = 'Izin MIUI Diperlukan';
+        instructions = 
+            '1. Setelan → Aplikasi → Kelola aplikasi → ExaManmet\n'
+            '2. Aktifkan "Autostart"\n'
+            '3. Penghemat baterai → Tanpa pembatasan\n'
+            '4. Izin lainnya → Tampilkan di layar kunci → Izinkan';
+        break;
+      case 'oppo':
+      case 'realme':
+      case 'oneplus':
+        title = 'Izin ColorOS Diperlukan';
+        instructions = 
+            '1. Setelan → Manajemen Aplikasi → ExaManmet\n'
+            '2. Aktifkan "Izinkan Autostart"\n'
+            '3. Baterai → ExaManmet → Izinkan aktivitas latar belakang\n'
+            '4. Jangan aktifkan pengoptimalan baterai';
+        break;
+      case 'huawei':
+      case 'honor':
+        title = 'Izin EMUI Diperlukan';
+        instructions = 
+            '1. Setelan → Baterai → Peluncuran Aplikasi\n'
+            '2. Temukan ExaManmet → Matikan "Kelola otomatis"\n'
+            '3. Aktifkan: Auto-launch, Secondary launch, Run in background';
+        break;
+      default:
+        title = 'Izin Latar Belakang Diperlukan';
+        instructions = 
+            '1. Buka Setelan → Aplikasi → ExaManmet\n'
+            '2. Aktifkan Autostart / Background activity\n'
+            '3. Nonaktifkan pengoptimalan baterai untuk ExaManmet';
+    }
+
+    await showGeneralDialog(
+      context: context,
+      barrierDismissible: false,
+      barrierLabel: '',
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 400),
+      pageBuilder: (_, __, ___) => const SizedBox.shrink(),
+      transitionBuilder: (ctx, anim, secondAnim, child) {
+        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        return Transform.scale(
+          scale: curvedAnim.value,
+          child: Opacity(
+            opacity: anim.value,
+            child: Dialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              elevation: 20,
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 400),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Colors.white, Color(0xFFFFF3E0)],
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 70,
+                          height: 70,
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [Colors.orange.shade400, Colors.deepOrange.shade500],
+                            ),
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.orange.withOpacity(0.4),
+                                blurRadius: 20,
+                                spreadRadius: 4,
+                              ),
+                            ],
+                          ),
+                          child: const Icon(Icons.phone_android_rounded, color: Colors.white, size: 36),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          title,
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.deepOrange.shade700,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 6),
+                        Container(
+                          width: 40, height: 3,
+                          decoration: BoxDecoration(
+                            color: Colors.orange.shade200,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.shade50,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: Colors.orange.shade200),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange.shade700),
+                                  const SizedBox(width: 6),
+                                  Text('Agar app tidak force close:',
+                                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.orange.shade700)),
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                instructions,
+                                style: TextStyle(fontSize: 12.5, color: Colors.grey.shade800, height: 1.6),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 48,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.deepOrange.shade600,
+                              foregroundColor: Colors.white,
+                              elevation: 4,
+                              shadowColor: Colors.orange.withOpacity(0.4),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                            onPressed: () => Navigator.pop(ctx),
+                            icon: const Icon(Icons.settings_rounded, size: 20),
+                            label: const Text(
+                              'Buka Pengaturan',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Setelah mengaktifkan izin, kembali ke aplikasi ini.',
+                          style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _showAnnouncement(ExamConfig config) async {

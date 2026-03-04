@@ -324,9 +324,104 @@ class MainActivity : FlutterActivity() {
                     result.success(imeInfo)
                 }
 
+                // Get device manufacturer info (for OEM-specific handling)
+                "getDeviceInfo" -> {
+                    val info = mutableMapOf<String, Any>()
+                    info["manufacturer"] = Build.MANUFACTURER.lowercase()
+                    info["brand"] = Build.BRAND.lowercase()
+                    info["model"] = Build.MODEL
+                    info["sdk_int"] = Build.VERSION.SDK_INT
+                    info["android_version"] = Build.VERSION.RELEASE ?: "unknown"
+                    result.success(info)
+                }
+
+                // Check if this OEM needs special autostart/background permission
+                "needsOemPermission" -> {
+                    val manufacturer = Build.MANUFACTURER.lowercase()
+                    val needsPermission = manufacturer in listOf(
+                        "vivo", "oppo", "realme", "oneplus",
+                        "xiaomi", "redmi", "poco",
+                        "huawei", "honor",
+                        "samsung", "meizu", "letv", "asus"
+                    )
+                    val intentActions = getOemAutostartIntents()
+                    result.success(mapOf(
+                        "needs_permission" to needsPermission,
+                        "manufacturer" to manufacturer,
+                        "has_intent" to intentActions.isNotEmpty()
+                    ))
+                }
+
+                // Open OEM-specific autostart/background permission settings
+                "openOemPermissionSettings" -> {
+                    val opened = openOemAutostartSettings()
+                    result.success(opened)
+                }
+
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /**
+     * Get list of OEM-specific autostart/background permission intents.
+     * Different manufacturers have different settings pages.
+     */
+    private fun getOemAutostartIntents(): List<Intent> {
+        val intents = mutableListOf<Intent>()
+        val manufacturer = Build.MANUFACTURER.lowercase()
+
+        when {
+            manufacturer.contains("vivo") -> {
+                intents.add(Intent().setClassName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"))
+                intents.add(Intent().setClassName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager"))
+                intents.add(Intent().setClassName("com.vivo.abe", "com.vivo.applicationbehaviorengine.ui.ExcessivePowerManagerActivity"))
+            }
+            manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") -> {
+                intents.add(Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"))
+            }
+            manufacturer.contains("oppo") || manufacturer.contains("realme") || manufacturer.contains("oneplus") -> {
+                intents.add(Intent().setClassName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"))
+                intents.add(Intent().setClassName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"))
+                intents.add(Intent().setClassName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"))
+            }
+            manufacturer.contains("huawei") || manufacturer.contains("honor") -> {
+                intents.add(Intent().setClassName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"))
+                intents.add(Intent().setClassName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity"))
+            }
+            manufacturer.contains("samsung") -> {
+                intents.add(Intent().setClassName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"))
+            }
+        }
+
+        // Filter to only resolvable intents
+        return intents.filter { intent ->
+            intent.resolveActivity(packageManager) != null
+        }
+    }
+
+    /**
+     * Try to open OEM autostart/background permission settings.
+     * Tries multiple known intents until one works.
+     */
+    private fun openOemAutostartSettings(): Boolean {
+        val intents = getOemAutostartIntents()
+        for (intent in intents) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                return true
+            } catch (_: Exception) {}
+        }
+        // Fallback: open app info page where user can find battery/background settings
+        try {
+            val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            intent.data = android.net.Uri.parse("package:$packageName")
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            return true
+        } catch (_: Exception) {}
+        return false
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -748,20 +843,22 @@ class MainActivity : FlutterActivity() {
             // Immediately try to collapse it and re-hide UI
             collapseStatusBar()
             hideSystemUI()
-            // Schedule rapid retries
+            // Gentler retries on API <= 28 (Vivo/Oppo OEM compatibility)
+            val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
+            val firstDelay = if (isOldApi) 200L else 50L
             handler.postDelayed({
                 if (isLockdownActive && !isExiting) {
                     collapseStatusBar()
                     hideSystemUI()
                 }
-            }, 50)
+            }, firstDelay)
             handler.postDelayed({
                 if (isLockdownActive && !isExiting) {
                     collapseStatusBar()
                     hideSystemUI()
                     bringAppToFront()
                 }
-            }, 150)
+            }, firstDelay * 2)
         }
     }
 
@@ -802,20 +899,21 @@ class MainActivity : FlutterActivity() {
                 // Not Home — likely Recent button, phone call, or system dialog
                 sendSecurityEvent("recent_pressed")
             }
-            // Aggressive multi-retry bring-to-front — start IMMEDIATELY
+            // Bring-to-front: delayed on API <= 28 to avoid Vivo/OEM kill
             handler.removeCallbacks(bringToFrontRunnable)
-            handler.post(bringToFrontRunnable)  // No delay — start instantly
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                handler.postDelayed(bringToFrontRunnable, 300)  // Gentle delay for Vivo/Oppo
+            } else {
+                handler.post(bringToFrontRunnable)  // No delay on newer Android
+            }
         }
     }
 
     /**
      * Runnable that aggressively brings app to front with retries.
-     * First 5 times: fast 200ms intervals. Then: persistent 500ms intervals until app is back.
-     * NEVER gives up — keeps retrying until app returns to foreground (onResume stops it).
-     */
-    /**
-     * Runnable that aggressively brings app to front with retries.
-     * Ultra-fast first retries, never gives up until onResume stops it.
+     * On API <= 28 (Android 9-), uses gentler intervals to avoid Vivo/Oppo/Xiaomi
+     * OEM task managers killing the app for "excessive background activity".
+     * On API 29+, uses ultra-fast retries since those OEMs relaxed restrictions.
      */
     private val bringToFrontRunnable = object : Runnable {
         private var retryCount = 0
@@ -828,11 +926,23 @@ class MainActivity : FlutterActivity() {
             bringAppToFront()
             hideSystemUI()
             retryCount++
-            // Ultra-fast first 5 retries (50ms), then fast (150ms), then persistent (300ms)
-            val delay = when {
-                retryCount < 5 -> 50L    // First 250ms: 5 attempts @ 50ms
-                retryCount < 15 -> 150L  // Next 1.5s: 10 attempts @ 150ms  
-                else -> 300L             // Then: persistent @ 300ms
+
+            // Gentler on Android 9 and below (Vivo/Oppo OEM kill protection)
+            val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
+            val delay = if (isOldApi) {
+                // Gentler: 200ms -> 500ms -> 1000ms
+                when {
+                    retryCount < 3 -> 200L
+                    retryCount < 8 -> 500L
+                    else -> 1000L
+                }
+            } else {
+                // Aggressive: 50ms -> 150ms -> 300ms
+                when {
+                    retryCount < 5 -> 50L
+                    retryCount < 15 -> 150L
+                    else -> 300L
+                }
             }
             handler.postDelayed(this, delay)
         }
@@ -846,16 +956,20 @@ class MainActivity : FlutterActivity() {
         if (isLockdownActive && !isExiting) {
             bringAppToFront()
             collapseStatusBar()
-            // Schedule rapid retries
+            // Gentler retries on API <= 28 (Vivo/Oppo OEM compatibility)
+            val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
+            val baseDelay = if (isOldApi) 300L else 50L
             handler.postDelayed({
                 if (isLockdownActive && !isExiting) { bringAppToFront(); collapseStatusBar() }
-            }, 50)
+            }, baseDelay)
             handler.postDelayed({
                 if (isLockdownActive && !isExiting) { bringAppToFront(); hideSystemUI() }
-            }, 150)
-            handler.postDelayed({
-                if (isLockdownActive && !isExiting) bringAppToFront()
-            }, 300)
+            }, baseDelay * 2)
+            if (!isOldApi) {
+                handler.postDelayed({
+                    if (isLockdownActive && !isExiting) bringAppToFront()
+                }, 300)
+            }
         }
     }
 
@@ -1357,8 +1471,10 @@ class MainActivity : FlutterActivity() {
             val reader = process.inputStream.bufferedReader()
             val result = reader.readLine()
             reader.close()
+            process.destroy()
             result != null
         } catch (_: Exception) { false }
+        catch (_: Error) { false } // Catch NoClassDefFoundError / SELinux errors on Vivo/Oppo
     }
 
     private fun checkRootPaths(): Boolean {
@@ -1377,8 +1493,10 @@ class MainActivity : FlutterActivity() {
             val reader = process.inputStream.bufferedReader()
             val result = reader.readLine()?.trim()
             reader.close()
+            process.destroy()
             result == "1"
         } catch (_: Exception) { false }
+        catch (_: Error) { false } // Catch SELinux/security errors on OEM ROMs
     }
 
     private fun checkRootManagementApps(): Boolean {

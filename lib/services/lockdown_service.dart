@@ -209,6 +209,45 @@ class LockdownService {
     }
   }
 
+  /// Get device info (manufacturer, brand, model, SDK version)
+  Future<Map<String, dynamic>> getDeviceInfo() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('getDeviceInfo');
+        return Map<String, dynamic>.from(result ?? {});
+      }
+    } catch (e) {
+      debugPrint('Failed to get device info: $e');
+    }
+    return {};
+  }
+
+  /// Check if this device's OEM needs special autostart/background permission
+  Future<Map<String, dynamic>> checkOemPermission() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('needsOemPermission');
+        return Map<String, dynamic>.from(result ?? {});
+      }
+    } catch (e) {
+      debugPrint('Failed to check OEM permission: $e');
+    }
+    return {'needs_permission': false, 'manufacturer': 'unknown', 'has_intent': false};
+  }
+
+  /// Open OEM-specific autostart/background permission settings
+  Future<bool> openOemPermissionSettings() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('openOemPermissionSettings');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to open OEM permission settings: $e');
+    }
+    return false;
+  }
+
   /// Check if any blocked apps are currently running
   Future<List<String>> getRunningBlockedApps() async {
     if (_config == null || _config!.blockedApps.isEmpty) return [];
