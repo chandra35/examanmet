@@ -924,9 +924,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     final hasFloating = await _lockdownService.hasFloatingApps();
     if (hasFloating && mounted) {
-      _violationCount++;
+      // Log but don't count as violation — just warn
       _sessionService.reportViolation('floating_app', detail: 'Floating/overlay app detected');
-      _checkAutoLock();
       _showWarningBanner(
         icon: Icons.layers_clear_rounded,
         color: Colors.deepOrange,
@@ -961,31 +960,23 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     if (!mounted || _isExiting) return;
     debugPrint('[SECURITY_EVENT] $event');
 
-    // Increment violation for critical events
+    // === VIOLATIONS: Only count actual app exits ===
+    // home_pressed = user pressed Home button
+    // recent_pressed = user opened Recent Apps
+    // multi_window_detected = user opened split screen
     if (event == 'home_pressed' || event == 'recent_pressed' || event == 'multi_window_detected') {
       _violationCount++;
-      _lastNativeViolationTime = DateTime.now();  // Mark time to debounce lifecycle handler
+      _lastNativeViolationTime = DateTime.now();
       _sessionService.reportViolation('app_switch', detail: 'Security event: $event');
-      _checkAutoLock();  // Client-side auto-lock check
-      // Play alert sound on violation
+      _checkAutoLock();
       if (_config?.alertSoundOnViolation == true) {
         _lockdownService.playAlertSound();
       }
     }
 
-    // Handle Bluetooth events in real-time
-    if (event == 'bluetooth_turned_on' || event.startsWith('bluetooth_device_connected')) {
-      if (_config?.detectBluetooth == true) {
-        _checkBluetooth();
-      }
-    }
-
-    // Handle headset events in real-time
-    if (event.startsWith('headset_connected')) {
-      if (_config?.detectHeadset == true) {
-        _checkHeadset();
-      }
-    }
+    // === NON-VIOLATIONS: Just log, no counter increment ===
+    // notification_pulled, system_dialog, screen_off, bluetooth, headset, incoming_call
+    // These are informational only — swipe-down, calls, etc. are handled by DND
   }
 
   /// Perform periodic security audit
