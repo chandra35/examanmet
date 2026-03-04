@@ -93,7 +93,8 @@ class MainActivity : FlutterActivity() {
         override fun run() {
             if (isLockdownActive) {
                 hideSystemUI()
-                handler.postDelayed(this, 1500) // Re-apply every 1.5 seconds
+                collapseStatusBar()
+                handler.postDelayed(this, 800) // Re-apply every 800ms (was 1.5s)
             }
         }
     }
@@ -476,6 +477,9 @@ class MainActivity : FlutterActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemUI()
 
+        // Instantly re-hide system UI when it becomes visible (swipe-down detection)
+        setupSystemUiVisibilityListener()
+
         // Register broadcast receivers for system events
         registerSystemReceivers()
 
@@ -772,11 +776,9 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Add an invisible overlay on the status bar area to intercept and block
-     * swipe-down gestures that would open the notification panel.
-     * Uses FLAG_NOT_TOUCHABLE so touches pass through to the app toolbar below.
-     * The overlay serves as a visual barrier; actual notification blocking
-     * is handled by DND mode + collapseStatusBar() + immersiveRunnable.
+     * Add a thin invisible overlay on the very top edge of the screen
+     * to physically block swipe-down gestures from reaching the system.
+     * Height: only 6dp (the gesture detection zone) — does NOT overlap toolbar.
      * Requires SYSTEM_ALERT_WINDOW permission.
      */
     private fun addStatusBarBlocker() {
@@ -785,19 +787,28 @@ class MainActivity : FlutterActivity() {
         try {
             // Check if we have overlay permission
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                // No overlay permission — blocker won't work but other protections still apply
                 return
             }
 
             val blocker = View(this)
             blocker.setBackgroundColor(0) // Fully transparent
 
-            // Get actual status bar height (typically 24-28dp)
-            val statusBarHeight = getStatusBarHeight()
+            // Consume all touches in this thin strip to block swipe-down gesture
+            blocker.setOnTouchListener { _, _ ->
+                if (isLockdownActive) {
+                    collapseStatusBar()
+                    true // Consume the event
+                } else {
+                    false
+                }
+            }
+
+            // Very thin: only 6dp — just enough to catch the swipe-start gesture
+            val blockerHeight = (6 * resources.displayMetrics.density).toInt()
 
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
-                statusBarHeight,
+                blockerHeight,
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 else
@@ -805,7 +816,6 @@ class MainActivity : FlutterActivity() {
                     WindowManager.LayoutParams.TYPE_SYSTEM_ERROR,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                     or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                    or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                     or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                     or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT
@@ -816,7 +826,7 @@ class MainActivity : FlutterActivity() {
             wm.addView(blocker, params)
             statusBarBlocker = blocker
         } catch (e: Exception) {
-            // Overlay permission denied or other error — continue without blocker
+            // Overlay permission denied or other error
         }
     }
 
@@ -966,6 +976,30 @@ class MainActivity : FlutterActivity() {
     private fun debugLog(msg: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             android.util.Log.d("ExaManmet", msg)
+        }
+    }
+
+    /**
+     * Listen for system UI visibility changes and immediately re-hide.
+     * This catches the moment user swipes down to reveal status bar
+     * and hides it back almost instantly (< 100ms).
+     */
+    @Suppress("DEPRECATION")
+    private fun setupSystemUiVisibilityListener() {
+        window.decorView.setOnSystemUiVisibilityChangeListener { visibility ->
+            if (isLockdownActive && !isExiting) {
+                // If any system bar became visible, re-hide immediately
+                val isFullscreen = visibility and View.SYSTEM_UI_FLAG_FULLSCREEN != 0
+                if (!isFullscreen) {
+                    // Status bar appeared — hide it immediately
+                    handler.postDelayed({
+                        if (isLockdownActive && !isExiting) {
+                            hideSystemUI()
+                            collapseStatusBar()
+                        }
+                    }, 50)  // 50ms delay — instant to human eyes
+                }
+            }
         }
     }
 
@@ -1240,26 +1274,29 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Intercept touch events starting from the very top of the screen
+     * Intercept touch events starting from the very top edge of the screen
      * to prevent pulling down the notification shade/quick settings.
-     * This works even if the overlay blocker isn't active.
+     * Uses a thin 8dp zone at the top edge — narrow enough to not interfere
+     * with toolbar buttons (which start at the same region in immersive mode).
      */
     private var touchStartY = 0f
+    private var touchStartX = 0f
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
         if (isLockdownActive && ev != null) {
-            val statusBarHeight = (24 * resources.displayMetrics.density)  // ~24dp
+            // Very thin edge zone — only the first 8dp from the screen edge
+            val edgeZone = 8 * resources.displayMetrics.density
+
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     touchStartY = ev.rawY
-                    // If touch starts in the top edge, block it to prevent status bar pull
-                    if (ev.rawY < statusBarHeight) {
-                        collapseStatusBar()
-                        return true  // Consume — don't let system handle it
-                    }
+                    touchStartX = ev.rawX
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    // If swipe started near top and moves down, block it
-                    if (touchStartY < statusBarHeight * 2 && ev.rawY > touchStartY + statusBarHeight) {
+                    // Only block if: started in top edge AND moved significantly downward
+                    val deltaY = ev.rawY - touchStartY
+                    val deltaX = Math.abs(ev.rawX - touchStartX)
+                    if (touchStartY < edgeZone && deltaY > edgeZone * 2 && deltaY > deltaX) {
+                        // This is a swipe-down from the top edge — block it
                         collapseStatusBar()
                         hideSystemUI()
                         return true

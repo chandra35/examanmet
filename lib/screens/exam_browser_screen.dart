@@ -1823,6 +1823,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             children: [
               Column(
               children: [
+                // 6dp spacer to avoid overlap with native status bar blocker overlay
+                const SizedBox(height: 6),
                 // Toolbar (if enabled)
                 if (_config!.showToolbar) _buildToolbar(),
 
