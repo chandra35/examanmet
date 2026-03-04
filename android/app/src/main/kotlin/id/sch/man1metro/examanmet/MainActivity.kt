@@ -52,6 +52,7 @@ class MainActivity : FlutterActivity() {
     private var previousDndFilter: Int = NotificationManager.INTERRUPTION_FILTER_ALL
     private var dndEnabled = false
     private var phoneStateListener: PhoneStateListener? = null
+    private var lastLockTaskAttempt: Long = 0  // Prevent re-pin loop on Samsung
 
     // Bluetooth state change receiver
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -211,6 +212,7 @@ class MainActivity : FlutterActivity() {
                             // Shows system dialog for confirmation on first call
                             try {
                                 startLockTask()
+                                lastLockTaskAttempt = System.currentTimeMillis()
                             } catch (e: Exception) {
                                 debugLog("Screen pinning failed: ${e.message}")
                             }
@@ -1078,9 +1080,12 @@ class MainActivity : FlutterActivity() {
         if (hasFocus && isLockdownActive) {
             hideSystemUI()
             // Re-pin screen if student somehow unpinned
-            if (!isInLockTaskMode()) {
+            // Cooldown: wait 5s after last attempt to avoid Samsung confirmation loop
+            val now = System.currentTimeMillis()
+            if (!isInLockTaskMode() && (now - lastLockTaskAttempt > 5000)) {
                 try {
                     startLockTask()
+                    lastLockTaskAttempt = now
                 } catch (_: Exception) {}
             }
         } else if (!hasFocus && isLockdownActive) {
