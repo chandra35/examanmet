@@ -1729,32 +1729,160 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     );
   }
 
-  void _showExitDialog() async {
-    // Always fetch latest config from server to get current exit password
-    try {
-      final latestConfig = await _configService.fetchConfig();
-      _config = latestConfig;
-    } catch (_) {
-      // Use cached config if server unreachable
-    }
-
-    if (!mounted) return;
-
+  void _showExitDialog() {
+    // Show dialog immediately — don't wait for network
     if (_config?.exitPassword != null && _config!.exitPassword!.isNotEmpty) {
       Navigator.pushNamed(context, '/exit-password');
     } else {
-      _showAnimatedConfirmDialog(
-        icon: Icons.exit_to_app_rounded,
-        iconColor: Colors.white,
-        iconBgColor: Colors.blueGrey,
-        title: 'Keluar dari Ujian?',
-        message: 'Apakah Anda yakin ingin keluar dari mode ujian?\nPastikan Anda sudah selesai mengerjakan.',
-        cancelText: 'Batal',
-        confirmText: 'Keluar',
-        confirmColor: Colors.red,
-        onConfirm: () => _exitExam(),
-      );
+      _showExitBottomSheet();
     }
+
+    // Refresh config in background for next time
+    _configService.fetchConfig().then((c) {
+      if (mounted) _config = c;
+    }).catchError((_) {});
+  }
+
+  /// Modern bottom sheet exit confirmation — responsive & compact
+  void _showExitBottomSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      barrierColor: Colors.black54,
+      builder: (ctx) {
+        return Container(
+          margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1D2E),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.4),
+                blurRadius: 24,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Drag handle
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Icon + Title row
+                  Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: Colors.red.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.power_settings_new_rounded,
+                          color: Colors.redAccent,
+                          size: 24,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Keluar dari Ujian?',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              'Pastikan semua jawaban sudah tersimpan',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.5),
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  // Buttons
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SizedBox(
+                          height: 46,
+                          child: OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white70,
+                              side: BorderSide(color: Colors.white.withOpacity(0.15)),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              backgroundColor: Colors.white.withOpacity(0.05),
+                            ),
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text(
+                              'Batal',
+                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: SizedBox(
+                          height: 46,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.shade600,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              elevation: 0,
+                            ),
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              _exitExam();
+                            },
+                            icon: const Icon(Icons.exit_to_app_rounded, size: 18),
+                            label: const Text(
+                              'Keluar',
+                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _exitExam() async {
