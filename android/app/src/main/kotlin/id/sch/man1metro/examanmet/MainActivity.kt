@@ -207,6 +207,13 @@ class MainActivity : FlutterActivity() {
                             if (protectionLevel == "full") {
                                 addStatusBarBlocker()
                             }
+                            // Screen Pinning: completely blocks status bar, home, recent
+                            // Shows system dialog for confirmation on first call
+                            try {
+                                startLockTask()
+                            } catch (e: Exception) {
+                                debugLog("Screen pinning failed: ${e.message}")
+                            }
                         }
                         handler.post(immersiveRunnable)
                         // Only run aggressive security audit on full protection
@@ -232,6 +239,12 @@ class MainActivity : FlutterActivity() {
                         // Remove ALL pending handler callbacks to prevent any lingering actions
                         handler.removeCallbacksAndMessages(null)
                         runOnUiThread {
+                            // Stop screen pinning first
+                            try {
+                                stopLockTask()
+                            } catch (e: Exception) {
+                                debugLog("Stop lock task failed: ${e.message}")
+                            }
                             removeStatusBarBlocker()
                             showSystemUI()
                         }
@@ -279,6 +292,10 @@ class MainActivity : FlutterActivity() {
                     val packages = call.argument<List<String>>("packages") ?: emptyList()
                     val running = checkRunningApps(packages)
                     result.success(running)
+                }
+
+                "isScreenPinned" -> {
+                    result.success(isInLockTaskMode())
                 }
 
                 // NEW: Full security audit — returns map of security threats
@@ -1042,11 +1059,30 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /**
+     * Check if the app is currently in Lock Task (screen pinning) mode.
+     */
+    private fun isInLockTaskMode(): Boolean {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+        } else {
+            @Suppress("DEPRECATION")
+            am.isInLockTaskMode
+        }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (isExiting) return
         if (hasFocus && isLockdownActive) {
             hideSystemUI()
+            // Re-pin screen if student somehow unpinned
+            if (!isInLockTaskMode()) {
+                try {
+                    startLockTask()
+                } catch (_: Exception) {}
+            }
         } else if (!hasFocus && isLockdownActive) {
             // Always re-hide UI and collapse status bar
             collapseStatusBar()
