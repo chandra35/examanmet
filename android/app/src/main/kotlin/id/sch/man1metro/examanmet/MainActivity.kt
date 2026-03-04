@@ -774,6 +774,9 @@ class MainActivity : FlutterActivity() {
     /**
      * Add an invisible overlay on the status bar area to intercept and block
      * swipe-down gestures that would open the notification panel.
+     * Uses FLAG_NOT_TOUCHABLE so touches pass through to the app toolbar below.
+     * The overlay serves as a visual barrier; actual notification blocking
+     * is handled by DND mode + collapseStatusBar() + immersiveRunnable.
      * Requires SYSTEM_ALERT_WINDOW permission.
      */
     private fun addStatusBarBlocker() {
@@ -789,23 +792,12 @@ class MainActivity : FlutterActivity() {
             val blocker = View(this)
             blocker.setBackgroundColor(0) // Fully transparent
 
-            // Intercept all touches in the status bar area
-            blocker.setOnTouchListener { _, event ->
-                // Consume DOWN and MOVE events to prevent swipe-down gesture
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                        // Collapse panel just in case
-                        collapseStatusBar()
-                        true // Consume the event
-                    }
-                    else -> true
-                }
-            }
+            // Get actual status bar height (typically 24-28dp)
+            val statusBarHeight = getStatusBarHeight()
 
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
-                // Cover top ~50dp of screen (status bar area + a bit more)
-                (50 * resources.displayMetrics.density).toInt(),
+                statusBarHeight,
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 else
@@ -813,6 +805,7 @@ class MainActivity : FlutterActivity() {
                     WindowManager.LayoutParams.TYPE_SYSTEM_ERROR,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                     or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                    or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                     or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                     or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT
@@ -824,6 +817,19 @@ class MainActivity : FlutterActivity() {
             statusBarBlocker = blocker
         } catch (e: Exception) {
             // Overlay permission denied or other error — continue without blocker
+        }
+    }
+
+    /**
+     * Get the actual status bar height in pixels.
+     */
+    private fun getStatusBarHeight(): Int {
+        val resourceId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (resourceId > 0) {
+            resources.getDimensionPixelSize(resourceId)
+        } else {
+            // Fallback: 24dp
+            (24 * resources.displayMetrics.density).toInt()
         }
     }
 
