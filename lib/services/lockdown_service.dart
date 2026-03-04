@@ -2,7 +2,16 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/exam_config.dart';
+
+/// Protection level for the device.
+/// Level 1: Basic (safe for all devices including aggressive OEMs)
+/// Level 2: Full (all protections, only for capable devices)
+enum ProtectionLevel {
+  basic,  // Level 1: immersive, screenshot block, violation report, auto-lock
+  full,   // Level 2: + overlay, bring-to-front, kill apps, root check, BT/headset
+}
 
 /// Service that handles all anti-cheat / lockdown functionality.
 /// This is the core security layer of ExaManmet.
@@ -12,6 +21,14 @@ class LockdownService {
 
   ExamConfig? _config;
   StreamSubscription? _securityEventSub;
+  ProtectionLevel _protectionLevel = ProtectionLevel.basic;
+  String _manufacturer = 'unknown';
+  bool _oemPermissionGranted = false;
+
+  /// Current protection level
+  ProtectionLevel get protectionLevel => _protectionLevel;
+  String get manufacturer => _manufacturer;
+  bool get isFullProtection => _protectionLevel == ProtectionLevel.full;
   
   /// Callback for security events from native side
   void Function(String event)? onSecurityEvent;
@@ -21,9 +38,83 @@ class LockdownService {
     _config = config;
   }
 
+  /// Determine the protection level based on device capabilities.
+  /// Call this BEFORE enableLockdown() to set the level.
+  /// Checks: manufacturer, OEM permission, overlay permission, SDK version.
+  Future<ProtectionLevel> determineProtectionLevel() async {
+    if (!Platform.isAndroid) {
+      _protectionLevel = ProtectionLevel.basic;
+      return _protectionLevel;
+    }
+
+    try {
+      // Get device info
+      final deviceInfo = await getDeviceInfo();
+      _manufacturer = (deviceInfo['manufacturer'] ?? 'unknown').toString().toLowerCase();
+      final sdkInt = deviceInfo['sdk_int'] ?? 0;
+
+      // Check OEM permission status
+      final oemInfo = await checkOemPermission();
+      final needsOemPermission = oemInfo['needs_permission'] == true;
+
+      // Check overlay permission
+      final hasOverlay = await hasOverlayPermission();
+
+      // Check if user previously chose to enable full protection
+      final prefs = await SharedPreferences.getInstance();
+      _oemPermissionGranted = prefs.getBool('oem_permission_granted') ?? false;
+
+      // Decision logic:
+      // - Stock Android / Pixel / non-aggressive OEM → Level 2 (full)
+      // - Aggressive OEM (Vivo/Oppo/Xiaomi) + API <= 28 + no OEM perm → Level 1
+      // - Aggressive OEM + OEM permission granted → Level 2
+      // - Aggressive OEM + API >= 29 → Level 2 (newer OEM ROMs are less aggressive)
+      
+      final isAggressiveOem = needsOemPermission;
+      final isOldApi = (sdkInt as int) <= 28;
+
+      if (!isAggressiveOem) {
+        // Stock Android, Pixel, etc. — full protection
+        _protectionLevel = ProtectionLevel.full;
+      } else if (_oemPermissionGranted && hasOverlay) {
+        // OEM but user granted permissions — full protection
+        _protectionLevel = ProtectionLevel.full;
+      } else if (isOldApi) {
+        // Aggressive OEM + old API (e.g. Vivo Android 9) — basic only
+        _protectionLevel = ProtectionLevel.basic;
+      } else {
+        // Aggressive OEM + newer API — try full, but gentler
+        _protectionLevel = hasOverlay ? ProtectionLevel.full : ProtectionLevel.basic;
+      }
+
+      debugPrint('[PROTECTION] Level: $_protectionLevel, OEM: $_manufacturer, SDK: $sdkInt, overlay: $hasOverlay, oemGranted: $_oemPermissionGranted');
+    } catch (e) {
+      debugPrint('[PROTECTION] Detection failed, defaulting to basic: $e');
+      _protectionLevel = ProtectionLevel.basic;
+    }
+
+    return _protectionLevel;
+  }
+
+  /// Mark that user has granted OEM permissions (persist across restarts)
+  Future<void> markOemPermissionGranted() async {
+    _oemPermissionGranted = true;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('oem_permission_granted', true);
+    // Re-evaluate level
+    await determineProtectionLevel();
+  }
+
   /// Enable all security measures
   Future<void> enableLockdown() async {
     if (_config == null) return;
+
+    // Sync protection level to native side
+    try {
+      await _channel.invokeMethod('setProtectionLevel', {
+        'level': _protectionLevel == ProtectionLevel.full ? 'full' : 'basic',
+      });
+    } catch (_) {}
 
     // Disable screenshots
     if (!_config!.allowScreenshot) {

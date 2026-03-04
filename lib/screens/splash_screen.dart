@@ -201,7 +201,6 @@ class _SplashScreenState extends State<SplashScreen> {
       if (needsOem && hasOemIntent) {
         await _addLine(_BootLine('  [ WARN ] ${manufacturer.toUpperCase()} device detected', color: _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
         await _addLine(_BootLine('  Autostart/background permission may be required', color: _dimWhite, delay: Duration(milliseconds: 80)));
-        await _addLine(_BootLine('  Opening permission settings...', color: _dimWhite, delay: Duration(milliseconds: 80)));
         
         // Show guide dialog before opening settings
         if (mounted) {
@@ -211,12 +210,26 @@ class _SplashScreenState extends State<SplashScreen> {
         await _lockdownService.openOemPermissionSettings();
         // Wait for user to come back
         await Future.delayed(const Duration(seconds: 5));
-        await _addLine(_BootLine('  [  OK  ] OEM permission check complete', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+        // Mark OEM permission as granted (user saw the guide and went to settings)
+        await _lockdownService.markOemPermissionGranted();
+        await _addLine(_BootLine('  [  OK  ] OEM permission configured', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
       } else if (needsOem) {
-        await _addLine(_BootLine('  [ INFO ] ${manufacturer.toUpperCase()} device - autostart setting not found', color: _dimWhite, isStatus: true, delay: Duration(milliseconds: 80)));
-        await _addLine(_BootLine('  If app closes unexpectedly, enable autostart manually', color: _yellow, delay: Duration(milliseconds: 80)));
+        await _addLine(_BootLine('  [ INFO ] ${manufacturer.toUpperCase()} device detected', color: _dimWhite, isStatus: true, delay: Duration(milliseconds: 80)));
       } else {
-        await _addLine(_BootLine('  [  OK  ] Device compatibility check passed', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+        await _addLine(_BootLine('  [  OK  ] Device compatibility OK', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+      }
+
+      // Determine and display protection level
+      await _addLine(_BootLine('', delay: Duration(milliseconds: 80)));
+      await _addLine(_BootLine(':: Determining protection level...', color: _cyan, delay: Duration(milliseconds: 100)));
+      final level = await _lockdownService.determineProtectionLevel();
+      if (level == ProtectionLevel.full) {
+        await _addLine(_BootLine('  [  OK  ] Protection: LEVEL 2 (FULL)', color: _green, isStatus: true, delay: Duration(milliseconds: 100)));
+        await _addLine(_BootLine('  All security modules enabled', color: _dimGreen, delay: Duration(milliseconds: 60)));
+      } else {
+        await _addLine(_BootLine('  [ INFO ] Protection: LEVEL 1 (BASIC)', color: _yellow, isStatus: true, delay: Duration(milliseconds: 100)));
+        await _addLine(_BootLine('  Safe mode for ${manufacturer.toUpperCase()} device', color: _dimWhite, delay: Duration(milliseconds: 60)));
+        await _addLine(_BootLine('  Core protections active, heavy modules disabled', color: _dimWhite, delay: Duration(milliseconds: 60)));
       }
     }
 

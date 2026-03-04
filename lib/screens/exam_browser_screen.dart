@@ -55,6 +55,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   bool _rootWarningShown = false;
   bool _isRemoteLocked = false;
   String? _remoteLockReason;
+  ProtectionLevel _protectionLevel = ProtectionLevel.basic;
 
   @override
   void initState() {
@@ -129,8 +130,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       _config = config;
     });
 
-    // Initialize lockdown (wrapped in try-catch for OEM compatibility)
+    // Initialize lockdown
     _lockdownService.initialize(config);
+
+    // Determine protection level (checks OEM, permissions, SDK)
+    _protectionLevel = await _lockdownService.determineProtectionLevel();
+    debugPrint('[EXAM] Protection level: $_protectionLevel');
+
+    // Enable lockdown (wrapped in try-catch for OEM compatibility)
     try {
       await _lockdownService.enableLockdown();
     } catch (e) {
@@ -146,14 +153,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Setup WebView
     _setupWebView(config);
 
+    final isFull = _protectionLevel == ProtectionLevel.full;
+
     // ========================================================
-    // STAGGERED TIMER INITIALIZATION
-    // Timers are started with delays to prevent memory/CPU spike
-    // that triggers Vivo/Oppo/Xiaomi OEM aggressive app killers.
+    // LEVEL 1 (ALL DEVICES): Essential protections
+    // These are lightweight and safe for all OEMs
     // ========================================================
 
-    // Phase 1 (immediate): Essential timers only
-    // Start clipboard clearing timer
+    // Clipboard clearing
     if (!config.allowClipboard) {
       _clipboardTimer = Timer.periodic(
         const Duration(seconds: 2),
@@ -161,92 +168,103 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       );
     }
 
-    // Periodically re-apply immersive mode from Flutter side (extra hardening)
+    // Immersive mode re-apply
     _immersiveTimer = Timer.periodic(
       const Duration(seconds: 3),
       (_) => SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
     );
 
-    // Phase 2 (after 2s): Security timers
-    Future.delayed(const Duration(seconds: 2), () {
-      if (!mounted) return;
+    // Config refresh (lightweight network call)
+    _configRefreshTimer = Timer.periodic(
+      const Duration(seconds: 60),
+      (_) => _refreshConfig(),
+    );
 
-      // Start floating app checker
-      if (Platform.isAndroid) {
-        _floatingCheckTimer = Timer.periodic(
-          const Duration(seconds: 3),
-          (_) => _checkForFloatingApps(),
+    // Notification check
+    _notifCheckTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _checkNotifications(),
+    );
+    Future.delayed(const Duration(seconds: 3), _checkNotifications);
+
+    // ========================================================
+    // LEVEL 2 (CAPABLE DEVICES ONLY): Aggressive protections
+    // Only enabled when device can handle it without OEM kill
+    // ========================================================
+
+    if (isFull) {
+      // Phase A (after 2s): Security monitors
+      Future.delayed(const Duration(seconds: 2), () {
+        if (!mounted) return;
+
+        // Floating app checker
+        if (Platform.isAndroid) {
+          _floatingCheckTimer = Timer.periodic(
+            const Duration(seconds: 3),
+            (_) => _checkForFloatingApps(),
+          );
+        }
+
+        // Security audit (developer options, ADB, accessibility)
+        _securityAuditTimer = Timer.periodic(
+          const Duration(seconds: 10),
+          (_) => _performSecurityAudit(),
         );
-      }
+        _performSecurityAudit();
+      });
 
-      // Periodic security audit (check developer options, ADB, accessibility, etc.)
-      _securityAuditTimer = Timer.periodic(
-        const Duration(seconds: 10),
-        (_) => _performSecurityAudit(),
-      );
-      // Run initial audit
-      _performSecurityAudit();
-    });
+      // Phase B (after 6s): Heavy operations
+      Future.delayed(const Duration(seconds: 6), () {
+        if (!mounted) return;
 
-    // Phase 3 (after 5s): Network & notification timers
-    Future.delayed(const Duration(seconds: 5), () {
-      if (!mounted) return;
+        // Kill suspicious background apps
+        if (Platform.isAndroid) {
+          _lockdownService.killSuspiciousApps();
+          _killAppsTimer = Timer.periodic(
+            const Duration(seconds: 15),
+            (_) => _lockdownService.killSuspiciousApps(),
+          );
+        }
 
-      // Periodically refresh config from server (keep passwords/settings in sync)
-      _configRefreshTimer = Timer.periodic(
-        const Duration(seconds: 60),
-        (_) => _refreshConfig(),
-      );
+        // Bluetooth detection
+        if (config.detectBluetooth && Platform.isAndroid) {
+          _bluetoothCheckTimer = Timer.periodic(
+            const Duration(seconds: 8),
+            (_) => _checkBluetooth(),
+          );
+          _checkBluetooth();
+        }
 
-      // Check for admin notifications every 30 seconds while app is open
-      _notifCheckTimer = Timer.periodic(
-        const Duration(seconds: 30),
-        (_) => _checkNotifications(),
-      );
-      _checkNotifications();
-    });
+        // Headset detection
+        if (config.detectHeadset && Platform.isAndroid) {
+          _headsetCheckTimer = Timer.periodic(
+            const Duration(seconds: 5),
+            (_) => _checkHeadset(),
+          );
+          _checkHeadset();
+        }
 
-    // Phase 4 (after 8s): Heavy/aggressive operations — delayed to avoid OEM kill
-    Future.delayed(const Duration(seconds: 8), () {
-      if (!mounted) return;
+        // Root detection
+        if (config.detectRoot && Platform.isAndroid) {
+          _checkRoot();
+        }
 
-      // Kill suspicious background apps — delayed to avoid Vivo/OEM security trigger
-      if (Platform.isAndroid) {
-        _lockdownService.killSuspiciousApps();
-        _killAppsTimer = Timer.periodic(
-          const Duration(seconds: 15),
-          (_) => _lockdownService.killSuspiciousApps(),
+        // Keyboard check
+        if (Platform.isAndroid) {
+          _checkKeyboard();
+        }
+      });
+    } else {
+      // LEVEL 1: Only lightweight security audit (no kill, no shell exec)
+      Future.delayed(const Duration(seconds: 3), () {
+        if (!mounted) return;
+        // Light audit — only checks developer options & USB debugging
+        _securityAuditTimer = Timer.periodic(
+          const Duration(seconds: 15),  // Less frequent on basic level
+          (_) => _performSecurityAudit(),
         );
-      }
-
-      // Bluetooth detection timer (every 8 seconds)
-      if (config.detectBluetooth && Platform.isAndroid) {
-        _bluetoothCheckTimer = Timer.periodic(
-          const Duration(seconds: 8),
-          (_) => _checkBluetooth(),
-        );
-        _checkBluetooth();
-      }
-
-      // Headset detection timer (every 5 seconds)
-      if (config.detectHeadset && Platform.isAndroid) {
-        _headsetCheckTimer = Timer.periodic(
-          const Duration(seconds: 5),
-          (_) => _checkHeadset(),
-        );
-        _checkHeadset();
-      }
-
-      // Root detection (check once)
-      if (config.detectRoot && Platform.isAndroid) {
-        _checkRoot();
-      }
-
-      // Keyboard (IME) check — warn if adware keyboard detected
-      if (Platform.isAndroid) {
-        _checkKeyboard();
-      }
-    });
+      });
+    }
 
     // Ping indicator — measure latency every 5 seconds
     _measurePing();
@@ -277,6 +295,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         });
       }
     };
+
+    // Report protection level to server
+    _sessionService.setProtectionLevel(
+      _protectionLevel == ProtectionLevel.full ? 'full' : 'basic',
+    );
 
     await _sessionService.startSession();
 

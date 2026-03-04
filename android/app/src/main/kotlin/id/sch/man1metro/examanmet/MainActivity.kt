@@ -45,6 +45,7 @@ class MainActivity : FlutterActivity() {
     private var securityEventSink: EventChannel.EventSink? = null
     private var alertMediaPlayer: MediaPlayer? = null
     private var statusBarBlocker: View? = null  // Invisible overlay to block status bar swipe
+    private var protectionLevel: String = "basic"  // "basic" or "full"
 
     // Bluetooth state change receiver
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -195,10 +196,16 @@ class MainActivity : FlutterActivity() {
                         isExiting = false  // Reset exit flag when starting lockdown
                         runOnUiThread {
                             hideSystemUI()
-                            addStatusBarBlocker()
+                            // Only add overlay blocker on full protection level
+                            if (protectionLevel == "full") {
+                                addStatusBarBlocker()
+                            }
                         }
                         handler.post(immersiveRunnable)
-                        handler.post(securityAuditRunnable)
+                        // Only run aggressive security audit on full protection
+                        if (protectionLevel == "full") {
+                            handler.post(securityAuditRunnable)
+                        }
                         result.success(true)
                     } catch (e: Exception) {
                         result.success(false)
@@ -350,6 +357,12 @@ class MainActivity : FlutterActivity() {
                         "manufacturer" to manufacturer,
                         "has_intent" to intentActions.isNotEmpty()
                     ))
+                }
+
+                // Set protection level from Flutter
+                "setProtectionLevel" -> {
+                    protectionLevel = call.argument<String>("level") ?: "basic"
+                    result.success(true)
                 }
 
                 // Open OEM-specific autostart/background permission settings
@@ -835,30 +848,31 @@ class MainActivity : FlutterActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (isExiting) return  // Don't interfere during exit
+        if (isExiting) return
         if (hasFocus && isLockdownActive) {
             hideSystemUI()
         } else if (!hasFocus && isLockdownActive) {
-            // User pulled down notification bar or opened system dialog
-            // Immediately try to collapse it and re-hide UI
+            // Always re-hide UI and collapse status bar
             collapseStatusBar()
             hideSystemUI()
-            // Gentler retries on API <= 28 (Vivo/Oppo OEM compatibility)
-            val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
-            val firstDelay = if (isOldApi) 200L else 50L
-            handler.postDelayed({
-                if (isLockdownActive && !isExiting) {
-                    collapseStatusBar()
-                    hideSystemUI()
-                }
-            }, firstDelay)
-            handler.postDelayed({
-                if (isLockdownActive && !isExiting) {
-                    collapseStatusBar()
-                    hideSystemUI()
-                    bringAppToFront()
-                }
-            }, firstDelay * 2)
+            // Only do aggressive retries + bringToFront on full protection
+            if (protectionLevel == "full") {
+                val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
+                val firstDelay = if (isOldApi) 200L else 50L
+                handler.postDelayed({
+                    if (isLockdownActive && !isExiting) {
+                        collapseStatusBar()
+                        hideSystemUI()
+                    }
+                }, firstDelay)
+                handler.postDelayed({
+                    if (isLockdownActive && !isExiting) {
+                        collapseStatusBar()
+                        hideSystemUI()
+                        bringAppToFront()
+                    }
+                }, firstDelay * 2)
+            }
         }
     }
 
@@ -893,18 +907,19 @@ class MainActivity : FlutterActivity() {
     override fun onPause() {
         super.onPause()
         if (isLockdownActive && !isExiting) {
-            // Send security event for violation tracking
-            // onUserLeaveHint already sent "home_pressed" if it was Home button
+            // Send security event for violation tracking (both levels)
             if (!userLeaveHintFired) {
-                // Not Home — likely Recent button, phone call, or system dialog
                 sendSecurityEvent("recent_pressed")
             }
-            // Bring-to-front: delayed on API <= 28 to avoid Vivo/OEM kill
-            handler.removeCallbacks(bringToFrontRunnable)
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                handler.postDelayed(bringToFrontRunnable, 300)  // Gentle delay for Vivo/Oppo
-            } else {
-                handler.post(bringToFrontRunnable)  // No delay on newer Android
+            // Bring-to-front: ONLY on full protection level
+            // On basic level, just report the violation — don't fight the OS
+            if (protectionLevel == "full") {
+                handler.removeCallbacks(bringToFrontRunnable)
+                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                    handler.postDelayed(bringToFrontRunnable, 300)
+                } else {
+                    handler.post(bringToFrontRunnable)
+                }
             }
         }
     }
@@ -954,21 +969,23 @@ class MainActivity : FlutterActivity() {
     override fun onStop() {
         super.onStop()
         if (isLockdownActive && !isExiting) {
-            bringAppToFront()
-            collapseStatusBar()
-            // Gentler retries on API <= 28 (Vivo/Oppo OEM compatibility)
-            val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
-            val baseDelay = if (isOldApi) 300L else 50L
-            handler.postDelayed({
-                if (isLockdownActive && !isExiting) { bringAppToFront(); collapseStatusBar() }
-            }, baseDelay)
-            handler.postDelayed({
-                if (isLockdownActive && !isExiting) { bringAppToFront(); hideSystemUI() }
-            }, baseDelay * 2)
-            if (!isOldApi) {
+            // Only bring-to-front on full protection level
+            if (protectionLevel == "full") {
+                bringAppToFront()
+                collapseStatusBar()
+                val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
+                val baseDelay = if (isOldApi) 300L else 50L
                 handler.postDelayed({
-                    if (isLockdownActive && !isExiting) bringAppToFront()
-                }, 300)
+                    if (isLockdownActive && !isExiting) { bringAppToFront(); collapseStatusBar() }
+                }, baseDelay)
+                handler.postDelayed({
+                    if (isLockdownActive && !isExiting) { bringAppToFront(); hideSystemUI() }
+                }, baseDelay * 2)
+                if (!isOldApi) {
+                    handler.postDelayed({
+                        if (isLockdownActive && !isExiting) bringAppToFront()
+                    }, 300)
+                }
             }
         }
     }

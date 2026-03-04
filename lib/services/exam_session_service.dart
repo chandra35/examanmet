@@ -25,6 +25,7 @@ class ExamSessionService {
   int _violationCount = 0;
   Timer? _heartbeatTimer;
   String? _baseUrl;
+  String _protectionLevel = 'basic';  // Level 1 or Level 2
 
   // Callback when lock status changes
   void Function(bool isLocked, String? reason)? onLockStatusChanged;
@@ -44,6 +45,11 @@ class ExamSessionService {
   int get violationCount => _violationCount;
   String? get sessionId => _sessionId;
   String? get moodleUsername => _moodleUsername;
+
+  /// Set protection level for reporting to server
+  void setProtectionLevel(String level) {
+    _protectionLevel = level;
+  }
 
   /// Initialize device info
   Future<void> _initDeviceInfo() async {
@@ -85,6 +91,7 @@ class ExamSessionService {
           'moodle_fullname': _moodleFullname,
           'app_version': _appVersion,
           'os_version': _osVersion,
+          'protection_level': _protectionLevel,
         },
       );
 
@@ -147,6 +154,7 @@ class ExamSessionService {
           'session_id': _sessionId,
           'moodle_username': _moodleUsername,
           'moodle_fullname': _moodleFullname,
+          'protection_level': _protectionLevel,
         },
       );
 
