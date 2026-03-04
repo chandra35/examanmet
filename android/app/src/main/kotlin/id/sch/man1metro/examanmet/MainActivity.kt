@@ -2,6 +2,7 @@ package id.sch.man1metro.examanmet
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.ActivityManager
+import android.app.NotificationManager
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
@@ -20,6 +21,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.telephony.PhoneStateListener
+import android.telephony.TelephonyManager
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
@@ -46,6 +49,9 @@ class MainActivity : FlutterActivity() {
     private var alertMediaPlayer: MediaPlayer? = null
     private var statusBarBlocker: View? = null  // Invisible overlay to block status bar swipe
     private var protectionLevel: String = "basic"  // "basic" or "full"
+    private var previousDndFilter: Int = NotificationManager.INTERRUPTION_FILTER_ALL
+    private var dndEnabled = false
+    private var phoneStateListener: PhoneStateListener? = null
 
     // Bluetooth state change receiver
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -206,6 +212,12 @@ class MainActivity : FlutterActivity() {
                         if (protectionLevel == "full") {
                             handler.post(securityAuditRunnable)
                         }
+                        // Enable DND mode to block ALL notifications & calls (both levels)
+                        enableDndMode()
+                        // Start phone state listener to detect incoming calls
+                        startPhoneStateListener()
+                        // Cancel any existing notifications
+                        cancelAllNotifications()
                         result.success(true)
                     } catch (e: Exception) {
                         result.success(false)
@@ -222,6 +234,9 @@ class MainActivity : FlutterActivity() {
                             removeStatusBarBlocker()
                             showSystemUI()
                         }
+                        // Restore DND mode & stop phone listener
+                        disableDndMode()
+                        stopPhoneStateListener()
                         // Re-post only the non-lockdown related runnables if needed
                         result.success(true)
                     } catch (e: Exception) {
@@ -363,6 +378,24 @@ class MainActivity : FlutterActivity() {
                 "setProtectionLevel" -> {
                     protectionLevel = call.argument<String>("level") ?: "basic"
                     result.success(true)
+                }
+
+                // Check DND policy access
+                "checkDndAccess" -> {
+                    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    result.success(nm.isNotificationPolicyAccessGranted)
+                }
+
+                // Request DND policy access (opens system settings)
+                "requestDndAccess" -> {
+                    try {
+                        val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
                 }
 
                 // Open OEM-specific autostart/background permission settings
@@ -804,6 +837,129 @@ class MainActivity : FlutterActivity() {
                 wm.removeView(blocker)
             } catch (_: Exception) {}
             statusBarBlocker = null
+        }
+    }
+
+    // ========================================================
+    // DND (Do Not Disturb) MODE — Block ALL notifications & calls
+    // This prevents WhatsApp notifications, calls, etc. during exam
+    // ========================================================
+
+    /**
+     * Enable Do Not Disturb mode to suppress ALL notifications and calls.
+     * This blocks: heads-up notifications, sounds, vibrations, WhatsApp calls, phone calls.
+     * Safe for all OEMs — no aggressive UI actions.
+     */
+    private fun enableDndMode() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.isNotificationPolicyAccessGranted) {
+                // Save current filter so we can restore later
+                previousDndFilter = nm.currentInterruptionFilter
+                // Set to TOTAL SILENCE — blocks everything
+                nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+                dndEnabled = true
+                debugLog("DND mode ENABLED (total silence)")
+            } else {
+                debugLog("DND mode NOT enabled — no policy access granted")
+            }
+        } catch (e: Exception) {
+            debugLog("DND enable error: ${e.message}")
+        }
+    }
+
+    /**
+     * Disable DND mode and restore previous interruption filter.
+     */
+    private fun disableDndMode() {
+        try {
+            if (dndEnabled) {
+                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (nm.isNotificationPolicyAccessGranted) {
+                    nm.setInterruptionFilter(previousDndFilter)
+                    debugLog("DND mode DISABLED — restored to filter $previousDndFilter")
+                }
+                dndEnabled = false
+            }
+        } catch (e: Exception) {
+            debugLog("DND disable error: ${e.message}")
+        }
+    }
+
+    /**
+     * Cancel all pending notifications from all apps.
+     * This clears any notifications that slipped through before DND was enabled.
+     */
+    private fun cancelAllNotifications() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancelAll()  // Cancel our own notifications
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Start listening for phone state changes.
+     * Detects incoming cellular calls and reports them as violations.
+     * Note: WhatsApp/VoIP calls are handled by DND mode, not this listener.
+     */
+    @Suppress("DEPRECATION")
+    private fun startPhoneStateListener() {
+        try {
+            val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            phoneStateListener = object : PhoneStateListener() {
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    if (!isLockdownActive) return
+                    when (state) {
+                        TelephonyManager.CALL_STATE_RINGING -> {
+                            sendSecurityEvent("incoming_call")
+                            // Re-apply lockdown: bring app to front + hide UI
+                            handler.postDelayed({
+                                if (isLockdownActive && !isExiting) {
+                                    hideSystemUI()
+                                    collapseStatusBar()
+                                    if (protectionLevel == "full") {
+                                        bringAppToFront()
+                                    }
+                                }
+                            }, 500)
+                        }
+                        TelephonyManager.CALL_STATE_OFFHOOK -> {
+                            sendSecurityEvent("call_answered")
+                            // Aggressively bring back on full protection
+                            if (protectionLevel == "full") {
+                                handler.postDelayed({
+                                    if (isLockdownActive && !isExiting) bringAppToFront()
+                                }, 300)
+                            }
+                        }
+                    }
+                }
+            }
+            tm.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
+            debugLog("Phone state listener started")
+        } catch (e: Exception) {
+            debugLog("Phone state listener error: ${e.message}")
+        }
+    }
+
+    /**
+     * Stop the phone state listener.
+     */
+    @Suppress("DEPRECATION")
+    private fun stopPhoneStateListener() {
+        try {
+            phoneStateListener?.let { listener ->
+                val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                tm.listen(listener, PhoneStateListener.LISTEN_NONE)
+            }
+            phoneStateListener = null
+            debugLog("Phone state listener stopped")
+        } catch (_: Exception) {}
+    }
+
+    private fun debugLog(msg: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            android.util.Log.d("ExaManmet", msg)
         }
     }
 

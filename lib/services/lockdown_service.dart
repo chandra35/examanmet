@@ -339,6 +339,34 @@ class LockdownService {
     return false;
   }
 
+  /// Check if DND (Do Not Disturb) policy access is granted.
+  /// Required to block WhatsApp notifications & calls during exam.
+  Future<bool> hasDndAccess() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('checkDndAccess');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to check DND access: $e');
+    }
+    return false;
+  }
+
+  /// Request DND policy access (opens system settings page).
+  /// User must manually enable DND access for ExaManmet.
+  Future<bool> requestDndAccess() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('requestDndAccess');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to request DND access: $e');
+    }
+    return false;
+  }
+
   /// Check if any blocked apps are currently running
   Future<List<String>> getRunningBlockedApps() async {
     if (_config == null || _config!.blockedApps.isEmpty) return [];

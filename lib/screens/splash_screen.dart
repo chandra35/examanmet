@@ -190,6 +190,33 @@ class _SplashScreenState extends State<SplashScreen> {
         }
       }
 
+      // Check DND (Do Not Disturb) access — needed to block WhatsApp notif & calls
+      await _addLine(_BootLine('', delay: Duration(milliseconds: 80)));
+      await _addLine(_BootLine(':: Checking notification policy access...', color: _cyan, delay: Duration(milliseconds: 100)));
+      final hasDnd = await _lockdownService.hasDndAccess();
+      if (!hasDnd) {
+        await _addLine(_BootLine('  [ WARN ] DND policy access not granted', color: _yellow, isStatus: true, delay: Duration(milliseconds: 80)));
+        await _addLine(_BootLine('  Diperlukan untuk blokir notifikasi & panggilan WA', color: _dimWhite, delay: Duration(milliseconds: 80)));
+        await _addLine(_BootLine('  Membuka pengaturan DND...', color: _dimWhite, delay: Duration(milliseconds: 80)));
+        
+        // Show guide dialog
+        if (mounted) {
+          await _showDndPermissionGuide();
+        }
+
+        await _lockdownService.requestDndAccess();
+        // Wait for user to come back
+        await Future.delayed(const Duration(seconds: 5));
+        final dndGranted = await _lockdownService.hasDndAccess();
+        if (dndGranted) {
+          await _addLine(_BootLine('  [  OK  ] DND access granted — notif & panggilan akan diblokir', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+        } else {
+          await _addLine(_BootLine('  [ WARN ] DND denied — notifikasi WA masih bisa muncul!', color: _red, isStatus: true, delay: Duration(milliseconds: 80)));
+        }
+      } else {
+        await _addLine(_BootLine('  [  OK  ] DND access granted', color: _green, isStatus: true, delay: Duration(milliseconds: 80)));
+      }
+
       // Check OEM-specific autostart/background permission (Vivo, Oppo, Xiaomi, etc.)
       await _addLine(_BootLine('', delay: Duration(milliseconds: 80)));
       await _addLine(_BootLine(':: Checking device compatibility...', color: _cyan, delay: Duration(milliseconds: 100)));
@@ -248,6 +275,56 @@ class _SplashScreenState extends State<SplashScreen> {
     } else {
       Navigator.pushReplacementNamed(context, '/exam');
     }
+  }
+
+  Future<void> _showDndPermissionGuide() async {
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Row(
+          children: [
+            Icon(Icons.do_not_disturb_on, color: Colors.orangeAccent, size: 28),
+            SizedBox(width: 10),
+            Expanded(child: Text('Izin DND Diperlukan', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold))),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'ExaManmet membutuhkan akses Do Not Disturb untuk:',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '• Memblokir notifikasi WhatsApp\n'
+              '• Memblokir panggilan masuk WA\n'
+              '• Memblokir semua gangguan saat ujian\n',
+              style: TextStyle(color: Colors.orangeAccent, fontSize: 13, height: 1.5),
+            ),
+            Text(
+              'Langkah:\n'
+              '1. Cari "ExaManmet" di daftar\n'
+              '2. Aktifkan toggle/izinkan akses\n'
+              '3. Kembali ke aplikasi',
+              style: TextStyle(color: Colors.white, fontSize: 13, height: 1.6),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('BUKA PENGATURAN', style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showOemPermissionGuide(String manufacturer) async {

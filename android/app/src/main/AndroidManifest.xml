@@ -17,6 +17,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
     <!-- Kill background cheating/bloatware apps -->
     <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES"/>
+    <!-- DND mode: block all notifications & calls during exam -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
+    <!-- Detect incoming phone calls -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
     
     <application
         android:label="ExaManmet"
