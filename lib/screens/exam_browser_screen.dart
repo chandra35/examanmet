@@ -2258,175 +2258,186 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       pingText = '${_pingMs}ms';
     }
 
-    return Container(
-      height: 48,
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-          colors: [Color(0xFF0D47A1), Color(0xFF1565C0), Color(0xFF0D47A1)],
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.25),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          const SizedBox(width: 2),
+    // Use LayoutBuilder to adapt to screen width
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final screenWidth = constraints.maxWidth;
+        // Compact mode for narrow screens (< 360dp)
+        final isCompact = screenWidth < 360;
+        final btnSize = isCompact ? 34.0 : 38.0;
+        final iconSize = isCompact ? 18.0 : 20.0;
+        final badgePadH = isCompact ? 6.0 : 10.0;
+        final fontSize = isCompact ? 9.0 : 10.0;
 
-          // Back button
-          _toolbarButton(
-            icon: Icons.arrow_back_rounded,
-            onTap: _canGoBack ? () async {
-              await _webController.goBack();
-              _updateNavState();
-            } : null,
-            tooltip: 'Kembali',
-            enabled: _canGoBack,
-          ),
-
-          // Forward button
-          _toolbarButton(
-            icon: Icons.arrow_forward_rounded,
-            onTap: _canGoForward ? () async {
-              await _webController.goForward();
-              _updateNavState();
-            } : null,
-            tooltip: 'Maju',
-            enabled: _canGoForward,
-          ),
-
-          // Reload button
-          if (_config!.allowReload)
-            _toolbarButton(
-              icon: Icons.refresh_rounded,
-              onTap: () => _webController.reload(),
-              tooltip: 'Muat Ulang',
+        return Container(
+          height: 44,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight,
+              colors: [Color(0xFF0D47A1), Color(0xFF1565C0), Color(0xFF0D47A1)],
             ),
-
-          // Ping indicator
-          GestureDetector(
-            onTap: _measurePing,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              margin: const EdgeInsets.symmetric(horizontal: 2),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(14),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.25),
+                blurRadius: 8,
+                offset: const Offset(0, 3),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: pingColor,
-                      boxShadow: [
-                        BoxShadow(
-                          color: pingColor.withOpacity(0.6),
-                          blurRadius: 4,
-                          spreadRadius: 1,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    pingText,
-                    style: TextStyle(
-                      color: pingColor,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            ],
           ),
+          child: Row(
+            children: [
+              const SizedBox(width: 2),
 
-          const Spacer(),
+              // Back button
+              _toolbarButton(
+                icon: Icons.arrow_back_rounded,
+                onTap: _canGoBack ? () async {
+                  await _webController.goBack();
+                  _updateNavState();
+                } : null,
+                tooltip: 'Kembali',
+                enabled: _canGoBack,
+                size: btnSize,
+                iconSize: iconSize,
+              ),
 
-          // EXAM lock badge
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  Colors.green.shade700.withOpacity(0.5),
-                  Colors.green.shade800.withOpacity(0.4),
-                ],
+              // Forward button
+              _toolbarButton(
+                icon: Icons.arrow_forward_rounded,
+                onTap: _canGoForward ? () async {
+                  await _webController.goForward();
+                  _updateNavState();
+                } : null,
+                tooltip: 'Maju',
+                enabled: _canGoForward,
+                size: btnSize,
+                iconSize: iconSize,
               ),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: Colors.greenAccent.withOpacity(0.3),
-                width: 0.5,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 6,
-                  height: 6,
+
+              // Reload button
+              if (_config!.allowReload)
+                _toolbarButton(
+                  icon: Icons.refresh_rounded,
+                  onTap: () => _webController.reload(),
+                  tooltip: 'Muat Ulang',
+                  size: btnSize,
+                  iconSize: iconSize,
+                ),
+
+              // Ping indicator
+              GestureDetector(
+                onTap: _measurePing,
+                child: Container(
+                  padding: EdgeInsets.symmetric(horizontal: isCompact ? 5 : 8, vertical: 3),
+                  margin: const EdgeInsets.symmetric(horizontal: 1),
                   decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.greenAccent,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.greenAccent.withOpacity(0.6),
-                        blurRadius: 4,
-                        spreadRadius: 1,
+                    color: Colors.black.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 5,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: pingColor,
+                        ),
+                      ),
+                      const SizedBox(width: 3),
+                      Text(
+                        pingText,
+                        style: TextStyle(
+                          color: pingColor,
+                          fontSize: fontSize,
+                          fontWeight: FontWeight.w700,
+                          fontFamily: 'monospace',
+                        ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(width: 5),
-                Text(
-                  'EXAM v$_appVersion',
-                  style: const TextStyle(
-                    color: Colors.greenAccent,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1,
+              ),
+
+              const Spacer(),
+
+              // EXAM lock badge — hide version text on very narrow screens
+              Container(
+                padding: EdgeInsets.symmetric(horizontal: badgePadH, vertical: 3),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.green.shade700.withOpacity(0.5),
+                      Colors.green.shade800.withOpacity(0.4),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.greenAccent.withOpacity(0.3),
+                    width: 0.5,
                   ),
                 ),
-              ],
-            ),
-          ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 5,
+                      height: 5,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.greenAccent,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      isCompact ? 'v$_appVersion' : 'EXAM v$_appVersion',
+                      style: TextStyle(
+                        color: Colors.greenAccent,
+                        fontSize: fontSize,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: isCompact ? 0.5 : 1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
-          const SizedBox(width: 4),
+              const SizedBox(width: 2),
 
-          // Moodle menu button (Dashboard, Kursusku, Logout)
-          _toolbarButton(
-            icon: Icons.menu_rounded,
-            onTap: _showMoodleMenu,
-            tooltip: 'Menu Moodle',
-          ),
+              // Moodle menu button
+              _toolbarButton(
+                icon: Icons.menu_rounded,
+                onTap: _showMoodleMenu,
+                tooltip: 'Menu Moodle',
+                size: btnSize,
+                iconSize: iconSize,
+              ),
 
-          // Quiz navigation button
-          _toolbarButton(
-            icon: Icons.grid_view_rounded,
-            onTap: _showQuizNavigation,
-            tooltip: 'Navigasi Soal',
-          ),
+              // Quiz navigation button
+              _toolbarButton(
+                icon: Icons.grid_view_rounded,
+                onTap: _showQuizNavigation,
+                tooltip: 'Navigasi Soal',
+                size: btnSize,
+                iconSize: iconSize,
+              ),
 
-          // Exit button
-          _toolbarButton(
-            icon: Icons.power_settings_new_rounded,
-            onTap: _showExitDialog,
-            tooltip: 'Keluar',
-            color: Colors.redAccent.shade100,
+              // Exit button — always visible
+              _toolbarButton(
+                icon: Icons.power_settings_new_rounded,
+                onTap: _showExitDialog,
+                tooltip: 'Keluar',
+                color: Colors.redAccent.shade100,
+                size: btnSize,
+                iconSize: iconSize,
+              ),
+              const SizedBox(width: 2),
+            ],
           ),
-          const SizedBox(width: 2),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -2436,22 +2447,24 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     required String tooltip,
     Color color = Colors.white,
     bool enabled = true,
+    double size = 38,
+    double iconSize = 20,
   }) {
     final effectiveColor = enabled ? color : color.withOpacity(0.3);
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: enabled ? onTap : null,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         splashColor: Colors.white.withOpacity(0.15),
         highlightColor: Colors.white.withOpacity(0.08),
         child: Tooltip(
           message: tooltip,
           child: Container(
-            width: 38,
-            height: 38,
+            width: size,
+            height: size,
             alignment: Alignment.center,
-            child: Icon(icon, color: effectiveColor, size: 20),
+            child: Icon(icon, color: effectiveColor, size: iconSize),
           ),
         ),
       ),
