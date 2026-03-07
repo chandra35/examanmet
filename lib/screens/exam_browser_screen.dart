@@ -2363,24 +2363,6 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
               const Spacer(),
 
-              // EXAM lock indicator (dot only, no text)
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.greenAccent,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.greenAccent.withOpacity(0.5),
-                      blurRadius: 4,
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(width: 2),
-
               // Moodle menu button
               _toolbarButton(
                 icon: Icons.menu_rounded,

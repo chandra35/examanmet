@@ -54,6 +54,38 @@ class MainActivity : FlutterActivity() {
     private var phoneStateListener: PhoneStateListener? = null
     private var lastLockTaskAttempt: Long = 0  // Prevent re-pin loop on Samsung
 
+    // ===== BRAND-AWARE BEHAVIOR SYSTEM =====
+    // Detected once at startup, used throughout the app.
+    // To handle a new brand issue, just add the brand string to the relevant Set.
+    private val deviceBrand: String by lazy { Build.MANUFACTURER.lowercase() }
+
+    // Brands that re-show "Pinned" toast when hideSystemUI() is called during Lock Task.
+    // Fix: skip immersive enforcement when screen is already pinned.
+    private val BRANDS_SKIP_IMMERSIVE_WHEN_PINNED = setOf(
+        "vivo"
+    )
+
+    // Brands where screen pinning (Lock Task) causes persistent dialog loops.
+    // The pin confirmation dialog re-appears endlessly because calling hideSystemUI()
+    // while the dialog is pending triggers Vivo FuntouchOS to stack new dialogs.
+    // Fix: skip startLockTask() entirely — rely on immersive + overlay + DND instead.
+    private val BRANDS_SKIP_SCREEN_PINNING = setOf(
+        "vivo"
+    )
+
+    // Brands that show re-pin confirmation dialog on every onWindowFocusChanged.
+    // Fix: never call startLockTask() outside of startKioskMode.
+    // (Currently ALL brands use pin-once approach, so this is informational.)
+    private val BRANDS_REPIN_DIALOG_LOOP = setOf(
+        "samsung"
+    )
+
+    // Computed properties
+    private val shouldSkipImmersiveWhenPinned: Boolean
+        get() = BRANDS_SKIP_IMMERSIVE_WHEN_PINNED.any { deviceBrand.contains(it) }
+    private val shouldSkipScreenPinning: Boolean
+        get() = BRANDS_SKIP_SCREEN_PINNING.any { deviceBrand.contains(it) }
+
     // Bluetooth state change receiver
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -89,13 +121,18 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // Periodically re-apply immersive mode to combat any system UI leaks
+    // Periodically re-apply immersive mode to combat any system UI leaks.
+    // Brand-aware: on brands in BRANDS_SKIP_IMMERSIVE_WHEN_PINNED,
+    // skip when Lock Task is active to avoid toast/notification loops.
     private val immersiveRunnable = object : Runnable {
         override fun run() {
             if (isLockdownActive) {
-                hideSystemUI()
-                collapseStatusBar()
-                handler.postDelayed(this, 800) // Re-apply every 800ms (was 1.5s)
+                val skipImmersive = shouldSkipImmersiveWhenPinned && isInLockTaskMode()
+                if (!skipImmersive) {
+                    hideSystemUI()
+                    collapseStatusBar()
+                }
+                handler.postDelayed(this, 800)
             }
         }
     }
@@ -210,11 +247,16 @@ class MainActivity : FlutterActivity() {
                             }
                             // Screen Pinning: completely blocks status bar, home, recent
                             // Shows system dialog for confirmation on first call
-                            try {
-                                startLockTask()
-                                lastLockTaskAttempt = System.currentTimeMillis()
-                            } catch (e: Exception) {
-                                debugLog("Screen pinning failed: ${e.message}")
+                            // Brand-aware: skip on brands with dialog loop issues
+                            if (!shouldSkipScreenPinning) {
+                                try {
+                                    startLockTask()
+                                    lastLockTaskAttempt = System.currentTimeMillis()
+                                } catch (e: Exception) {
+                                    debugLog("Screen pinning failed: ${e.message}")
+                                }
+                            } else {
+                                debugLog("Screen pinning skipped for brand: $deviceBrand")
                             }
                         }
                         handler.post(immersiveRunnable)
@@ -241,11 +283,13 @@ class MainActivity : FlutterActivity() {
                         // Remove ALL pending handler callbacks to prevent any lingering actions
                         handler.removeCallbacksAndMessages(null)
                         runOnUiThread {
-                            // Stop screen pinning first
-                            try {
-                                stopLockTask()
-                            } catch (e: Exception) {
-                                debugLog("Stop lock task failed: ${e.message}")
+                            // Stop screen pinning first (only if it was started)
+                            if (!shouldSkipScreenPinning) {
+                                try {
+                                    stopLockTask()
+                                } catch (e: Exception) {
+                                    debugLog("Stop lock task failed: ${e.message}")
+                                }
                             }
                             removeStatusBarBlocker()
                             showSystemUI()
@@ -1078,14 +1122,21 @@ class MainActivity : FlutterActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (isExiting) return
         if (hasFocus && isLockdownActive) {
-            hideSystemUI()
+            // Brand-aware: skip hideSystemUI when pinned on problematic brands
+            val skipImmersive = shouldSkipImmersiveWhenPinned && isInLockTaskMode()
+            if (!skipImmersive) {
+                hideSystemUI()
+            }
             // Do NOT re-pin here — calling startLockTask() on focus change
-            // causes infinite dialog loop on Samsung One UI.
+            // causes infinite dialog loop on Samsung One UI (BRANDS_REPIN_DIALOG_LOOP).
             // Pin once at startKioskMode, that's enough (same as V10CBT approach).
         } else if (!hasFocus && isLockdownActive) {
-            // Always re-hide UI and collapse status bar
-            collapseStatusBar()
-            hideSystemUI()
+            // Brand-aware: skip when pinned on problematic brands
+            val skipImmersive = shouldSkipImmersiveWhenPinned && isInLockTaskMode()
+            if (!skipImmersive) {
+                collapseStatusBar()
+                hideSystemUI()
+            }
             // Only do aggressive retries + bringToFront on full protection
             if (protectionLevel == "full") {
                 val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
@@ -1111,8 +1162,12 @@ class MainActivity : FlutterActivity() {
         super.onResume()
         userLeaveHintFired = false  // Reset for next pause cycle
         if (isLockdownActive && !isExiting) {
-            hideSystemUI()
-            collapseStatusBar()
+            // Brand-aware: skip when pinned on problematic brands
+            val skipImmersive = shouldSkipImmersiveWhenPinned && isInLockTaskMode()
+            if (!skipImmersive) {
+                hideSystemUI()
+                collapseStatusBar()
+            }
             // Stop bring-to-front retries since we're back in foreground
             handler.removeCallbacks(bringToFrontRunnable)
         }
