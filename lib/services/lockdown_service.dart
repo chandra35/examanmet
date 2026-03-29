@@ -570,6 +570,14 @@ class SecurityAuditResult {
       isInPiP ||
       isRooted;
 
+  /// Whether critical (acute) threats are present — these deserve alarm sound.
+  /// Developer Options / USB Debugging are settings-based, handled by blocking dialog only.
+  bool get hasCriticalThreats =>
+      accessibilityServices.isNotEmpty ||
+      isMultiWindow ||
+      isInPiP ||
+      isRooted;
+
   /// Get human-readable list of threats
   List<String> get threatDescriptions {
     final threats = <String>[];

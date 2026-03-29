@@ -1030,8 +1030,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         }
 
         // ALL threats are blocking — student must fix before continuing
-        // Play alert sound
-        if (_config?.alertSoundOnViolation == true) {
+        // Only play alarm for critical threats (multiwindow, PiP, root, accessibility)
+        // Dev Options / USB Debugging just show blocking dialog without alarm
+        if (threats.hasCriticalThreats && _config?.alertSoundOnViolation == true) {
           _lockdownService.playAlertSound();
         }
         // Show BLOCKING dialog with "Buka Pengaturan" button
