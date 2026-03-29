@@ -47,11 +47,12 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   Timer? _killAppsTimer;
   int _violationCount = 0;
   static const int _maxViolations = 5;
-  static const int _autoLockThreshold = 3;  // Client-side auto-lock (matches server)
+  static const int _autoLockThreshold = 5;  // Client-side auto-lock (matches server)
   bool _securityWarningShown = false;
   bool _bluetoothWarningShown = false;
   bool _isExiting = false;  // Prevents lifecycle hooks from fighting exit
   DateTime? _lastNativeViolationTime;  // Debounce to avoid double-counting
+  DateTime? _lastPausedTime;  // Debounce rapid paused events (Vivo/OPPO keyboard/login issues)
   bool _headsetWarningShown = false;
   bool _rootWarningShown = false;
   bool _isRemoteLocked = false;
@@ -108,6 +109,15 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         // Native event already reported this — skip to avoid double-counting
         return;
       }
+      // Debounce rapid paused events (< 5 seconds apart)
+      // Vivo/OPPO trigger paused during keyboard open/close, login redirects,
+      // Moodle AJAX requests, and system permission dialogs
+      if (_lastPausedTime != null &&
+          now.difference(_lastPausedTime!).inMilliseconds < 5000) {
+        debugPrint('[VIOLATION] Skipping rapid paused event (debounce)');
+        return;
+      }
+      _lastPausedTime = now;
       _violationCount++;
       _sessionService.reportViolation('app_switch', detail: 'App went to background');
       _checkAutoLock();  // Client-side auto-lock check
@@ -901,7 +911,17 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             return NavigationDecision.navigate;
           },
           onWebResourceError: (error) {
-            debugPrint('WebView error: ${error.description}');
+            debugPrint('WebView error: ${error.description} (type: ${error.errorType})');
+            // On fatal WebView crash (process killed by OS / OOM), reload the page
+            // This commonly happens on budget devices like Vivo Y17
+            if (error.errorType == WebResourceErrorType.webContentProcessTerminated) {
+              debugPrint('[WEBVIEW] Process terminated — reloading...');
+              Future.delayed(const Duration(seconds: 1), () {
+                if (mounted) {
+                  _webController.loadRequest(Uri.parse(config.moodleUrl));
+                }
+              });
+            }
           },
         ),
       )
@@ -1009,17 +1029,55 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
           _sessionService.reportViolation('usb_debugging', detail: 'USB debugging enabled');
         }
 
-        // Play alert sound
-        if (_config?.alertSoundOnViolation == true) {
-          _lockdownService.playAlertSound();
-        }
+        // For critical threats (root, accessibility), show BLOCKING dialog
+        // For moderate threats (developer options, USB debugging), show WARNING only
+        // This prevents Vivo/OPPO users from getting force-exited due to
+        // common settings or pre-installed OEM features
+        final hasCriticalThreats = threats.isRooted ||
+            threats.accessibilityServices.isNotEmpty ||
+            threats.isMultiWindow ||
+            threats.isInPiP;
 
-        // Show BLOCKING dialog — cannot continue until threats resolved
-        await _showBlockingSecurityDialog(threats);
+        if (hasCriticalThreats) {
+          // Play alert sound
+          if (_config?.alertSoundOnViolation == true) {
+            _lockdownService.playAlertSound();
+          }
+          // Show BLOCKING dialog — cannot continue until threats resolved
+          await _showBlockingSecurityDialog(threats);
+        } else {
+          // Non-critical: show dismissable warning, allow continue
+          _showSecurityWarningBanner(threats);
+          // Reset flag after 60 seconds to allow re-check
+          Future.delayed(const Duration(seconds: 60), () {
+            if (mounted) _securityWarningShown = false;
+          });
+        }
       }
     } catch (e) {
       debugPrint('Security audit error: $e');
     }
+  }
+
+  /// Show a non-blocking security warning banner for moderate threats
+  /// (developer options, USB debugging — common on Vivo/OPPO devices)
+  void _showSecurityWarningBanner(SecurityAuditResult threats) {
+    if (!mounted) return;
+    final descriptions = threats.threatDescriptions;
+    _showAnimatedDialog(
+      icon: Icons.shield_rounded,
+      iconColor: Colors.white,
+      iconBgColor: Colors.orange.shade700,
+      title: 'Peringatan Keamanan',
+      titleColor: Colors.orange.shade800,
+      message:
+          'Terdeteksi pengaturan yang tidak aman:\n\n'
+          '${descriptions.map((d) => '• $d').join('\n')}\n\n'
+          'Disarankan untuk menonaktifkan sebelum ujian.\n'
+          'Tindakan ini dicatat oleh pengawas.',
+      buttonText: 'Lanjutkan Ujian',
+      buttonColor: Colors.orange.shade700,
+    );
   }
 
   /// Show a blocking security dialog — forces exit from app.

@@ -370,6 +370,18 @@ class MainActivity : FlutterActivity() {
                     result.success(btInfo)
                 }
 
+                // Open Bluetooth settings so user can turn it off
+                "openBluetoothSettings" -> {
+                    try {
+                        val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+
                 // Check headset/earphone connection
                 "checkHeadset" -> {
                     result.success(isHeadsetConnected())

@@ -101,6 +101,20 @@ class _SplashScreenState extends State<SplashScreen> {
 
         await prefs.setBool('permissions_setup_done', true);
       }
+
+      // Bluetooth: always check every launch (not just first time)
+      if (mounted) setState(() => _statusText = 'Memeriksa Bluetooth...');
+      final btStatus = await _lockdownService.checkBluetooth();
+      if (btStatus.enabled) {
+        await _lockdownService.openBluetoothSettings();
+        // Wait for user to turn off, re-check periodically (max 20s)
+        for (int i = 0; i < 10; i++) {
+          await Future.delayed(const Duration(seconds: 2));
+          if (!mounted) return;
+          final recheck = await _lockdownService.checkBluetooth();
+          if (!recheck.enabled) break;
+        }
+      }
     }
 
     if (!mounted) return;

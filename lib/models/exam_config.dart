@@ -147,13 +147,21 @@ class ExamConfig {
     // Always allow the main moodle URL
     if (url.startsWith(moodleUrl)) return true;
 
+    // Also allow the same domain with either http or https scheme
+    // (handles Moodle login redirects that switch between http/https)
+    final moodleDomain = Uri.parse(moodleUrl).host;
+    final urlUri = Uri.tryParse(url);
+    if (urlUri != null && urlUri.host == moodleDomain) return true;
+
     // Allow SEB protocol URLs (sebs:// and seb://) for the same Moodle domain
     // Moodle sends sebs:// URLs for SEB config when it detects a SEB browser
-    final moodleDomain = Uri.parse(moodleUrl).host;
     if (url.startsWith('sebs://') || url.startsWith('seb://')) {
       final sebUri = Uri.tryParse(url);
       if (sebUri != null && sebUri.host == moodleDomain) return true;
     }
+
+    // Allow about:blank and data: URIs (used by Moodle AJAX/iframe)
+    if (url == 'about:blank' || url.startsWith('data:')) return true;
 
     // Check additional allowed URLs
     for (final allowedUrl in allowedUrls) {

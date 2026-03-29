@@ -456,6 +456,17 @@ class LockdownService {
     return BluetoothStatus(enabled: false, connectedDevices: []);
   }
 
+  /// Open Bluetooth settings so user can turn it off
+  Future<void> openBluetoothSettings() async {
+    try {
+      if (Platform.isAndroid) {
+        await _channel.invokeMethod('openBluetoothSettings');
+      }
+    } catch (e) {
+      debugPrint('Failed to open Bluetooth settings: $e');
+    }
+  }
+
   // ==================== Headset Detection ====================
 
   /// Check if headset/earphone is connected
