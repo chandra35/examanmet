@@ -1029,59 +1029,22 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
           _sessionService.reportViolation('usb_debugging', detail: 'USB debugging enabled');
         }
 
-        // For critical threats (root, accessibility), show BLOCKING dialog
-        // For moderate threats (developer options, USB debugging), show WARNING only
-        // This prevents Vivo/OPPO users from getting force-exited due to
-        // common settings or pre-installed OEM features
-        final hasCriticalThreats = threats.isRooted ||
-            threats.accessibilityServices.isNotEmpty ||
-            threats.isMultiWindow ||
-            threats.isInPiP;
-
-        if (hasCriticalThreats) {
-          // Play alert sound
-          if (_config?.alertSoundOnViolation == true) {
-            _lockdownService.playAlertSound();
-          }
-          // Show BLOCKING dialog — cannot continue until threats resolved
-          await _showBlockingSecurityDialog(threats);
-        } else {
-          // Non-critical: show dismissable warning, allow continue
-          _showSecurityWarningBanner(threats);
-          // Reset flag after 60 seconds to allow re-check
-          Future.delayed(const Duration(seconds: 60), () {
-            if (mounted) _securityWarningShown = false;
-          });
+        // ALL threats are blocking — student must fix before continuing
+        // Play alert sound
+        if (_config?.alertSoundOnViolation == true) {
+          _lockdownService.playAlertSound();
         }
+        // Show BLOCKING dialog with "Buka Pengaturan" button
+        await _showBlockingSecurityDialog(threats);
       }
     } catch (e) {
       debugPrint('Security audit error: $e');
     }
   }
 
-  /// Show a non-blocking security warning banner for moderate threats
-  /// (developer options, USB debugging — common on Vivo/OPPO devices)
-  void _showSecurityWarningBanner(SecurityAuditResult threats) {
-    if (!mounted) return;
-    final descriptions = threats.threatDescriptions;
-    _showAnimatedDialog(
-      icon: Icons.shield_rounded,
-      iconColor: Colors.white,
-      iconBgColor: Colors.orange.shade700,
-      title: 'Peringatan Keamanan',
-      titleColor: Colors.orange.shade800,
-      message:
-          'Terdeteksi pengaturan yang tidak aman:\n\n'
-          '${descriptions.map((d) => '• $d').join('\n')}\n\n'
-          'Disarankan untuk menonaktifkan sebelum ujian.\n'
-          'Tindakan ini dicatat oleh pengawas.',
-      buttonText: 'Lanjutkan Ujian',
-      buttonColor: Colors.orange.shade700,
-    );
-  }
-
-  /// Show a blocking security dialog — forces exit from app.
-  /// Student must fix device settings and reopen the app.
+  /// Show a blocking security dialog — student must fix settings first.
+  /// Has "Buka Pengaturan" to fix + "Cek Ulang" to re-check after fixing.
+  /// Dialog auto-rechecks when app resumes from Settings.
   Future<void> _showBlockingSecurityDialog(SecurityAuditResult threats) async {
     if (!mounted) return;
 
@@ -1097,146 +1060,17 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       pageBuilder: (dialogContext, _, __) {
         return PopScope(
           canPop: false,
-          child: Dialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-            elevation: 20,
-            child: Container(
-              constraints: const BoxConstraints(maxWidth: 380),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(24),
-                color: Colors.white,
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Red shield icon
-                      Container(
-                        width: 80,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [Colors.red.shade700, Colors.red.shade400],
-                          ),
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.red.shade700.withOpacity(0.5),
-                              blurRadius: 24,
-                              spreadRadius: 4,
-                            ),
-                          ],
-                        ),
-                        child: const Icon(Icons.gpp_bad_rounded, color: Colors.white, size: 44),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'UJIAN DIBLOKIR',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w900,
-                          color: Colors.red.shade700,
-                          letterSpacing: 1.0,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Container(
-                        width: 40, height: 3,
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade200,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      // Threat list
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade50,
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: Colors.red.shade200),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Ancaman terdeteksi:',
-                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.red.shade700)),
-                            const SizedBox(height: 8),
-                            ...descriptions.map((d) => Padding(
-                              padding: const EdgeInsets.only(bottom: 4),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(Icons.dangerous_rounded, size: 16, color: Colors.red.shade600),
-                                  const SizedBox(width: 6),
-                                  Expanded(child: Text(d,
-                                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.red.shade800))),
-                                ],
-                              ),
-                            )),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      // Instructions
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.shade50,
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: Colors.orange.shade200),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(children: [
-                              Icon(Icons.help_outline_rounded, size: 16, color: Colors.orange.shade800),
-                              const SizedBox(width: 6),
-                              Text('Cara memperbaiki:',
-                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.orange.shade800)),
-                            ]),
-                            const SizedBox(height: 10),
-                            Text(instructions,
-                              style: TextStyle(fontSize: 12, color: Colors.grey.shade800, height: 1.6)),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      // EXIT button
-                      SizedBox(
-                        width: double.infinity,
-                        height: 52,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.shade700,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                            elevation: 4,
-                            shadowColor: Colors.red.shade700.withOpacity(0.4),
-                          ),
-                          onPressed: () => _exitAppDueToSecurity(),
-                          icon: const Icon(Icons.exit_to_app_rounded, size: 22),
-                          label: const Text('Keluar dari Aplikasi',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Nonaktifkan ancaman di Setelan HP,\nlalu buka kembali aplikasi ini.',
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade500, height: 1.4),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          child: _SecurityBlockingDialog(
+            descriptions: descriptions,
+            instructions: instructions,
+            lockdownService: _lockdownService,
+            onThreatsCleared: () {
+              // Threats resolved — dismiss dialog and continue exam
+              _securityWarningShown = false;
+              _lockdownService.stopAlertSound();
+              Navigator.of(dialogContext).pop();
+            },
+            onExit: () => _exitAppDueToSecurity(),
           ),
         );
       },
@@ -3300,3 +3134,286 @@ class _WarningBannerWidgetState extends State<_WarningBannerWidget>
   }
 }
 
+/// Blocking security dialog with "Buka Pengaturan" + "Cek Ulang" buttons.
+/// Auto-rechecks when app resumes from Settings and dismisses if threats cleared.
+class _SecurityBlockingDialog extends StatefulWidget {
+  final List<String> descriptions;
+  final String instructions;
+  final LockdownService lockdownService;
+  final VoidCallback onThreatsCleared;
+  final VoidCallback onExit;
+
+  const _SecurityBlockingDialog({
+    required this.descriptions,
+    required this.instructions,
+    required this.lockdownService,
+    required this.onThreatsCleared,
+    required this.onExit,
+  });
+
+  @override
+  State<_SecurityBlockingDialog> createState() => _SecurityBlockingDialogState();
+}
+
+class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
+    with WidgetsBindingObserver {
+  bool _isChecking = false;
+  String? _statusMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Auto-recheck when returning from Settings
+    if (state == AppLifecycleState.resumed) {
+      _recheckThreats();
+    }
+  }
+
+  Future<void> _recheckThreats() async {
+    if (_isChecking) return;
+    setState(() {
+      _isChecking = true;
+      _statusMessage = 'Memeriksa ulang...';
+    });
+
+    // Brief delay to let system state settle
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    try {
+      final audit = await widget.lockdownService.getSecurityThreats();
+      if (!mounted) return;
+
+      if (!audit.hasThreats) {
+        setState(() => _statusMessage = 'Ancaman sudah diatasi!');
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted) widget.onThreatsCleared();
+      } else {
+        setState(() {
+          _isChecking = false;
+          _statusMessage = 'Masih ada ancaman aktif. Silakan perbaiki terlebih dahulu.';
+        });
+        // Clear status message after 3 seconds
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) setState(() => _statusMessage = null);
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isChecking = false;
+          _statusMessage = null;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      elevation: 20,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 380),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          color: Colors.white,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Red shield icon
+                Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Colors.red.shade700, Colors.red.shade400],
+                    ),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.red.shade700.withOpacity(0.5),
+                        blurRadius: 24,
+                        spreadRadius: 4,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.gpp_bad_rounded, color: Colors.white, size: 44),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'UJIAN DIBLOKIR',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.red.shade700,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: 40, height: 3,
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade200,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Threat list
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.red.shade200),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Ancaman terdeteksi:',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.red.shade700)),
+                      const SizedBox(height: 8),
+                      ...widget.descriptions.map((d) => Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(Icons.dangerous_rounded, size: 16, color: Colors.red.shade600),
+                            const SizedBox(width: 6),
+                            Expanded(child: Text(d,
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.red.shade800))),
+                          ],
+                        ),
+                      )),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                // Instructions
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.orange.shade200),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Icon(Icons.help_outline_rounded, size: 16, color: Colors.orange.shade800),
+                        const SizedBox(width: 6),
+                        Text('Cara memperbaiki:',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.orange.shade800)),
+                      ]),
+                      const SizedBox(height: 10),
+                      Text(widget.instructions,
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade800, height: 1.6)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                // Status message (checking / result)
+                if (_statusMessage != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (_isChecking)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: SizedBox(
+                              width: 16, height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.blue.shade600,
+                              ),
+                            ),
+                          ),
+                        Flexible(
+                          child: Text(
+                            _statusMessage!,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: _isChecking ? Colors.blue.shade600 : Colors.red.shade600,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                // Primary: Open Settings button
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue.shade700,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      elevation: 4,
+                      shadowColor: Colors.blue.shade700.withOpacity(0.4),
+                    ),
+                    onPressed: _isChecking ? null : () {
+                      widget.lockdownService.openDeveloperSettings();
+                    },
+                    icon: const Icon(Icons.settings_rounded, size: 22),
+                    label: const Text('Buka Pengaturan',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Secondary: Re-check button
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.green.shade700,
+                      side: BorderSide(color: Colors.green.shade400, width: 1.5),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: _isChecking ? null : _recheckThreats,
+                    icon: const Icon(Icons.refresh_rounded, size: 20),
+                    label: const Text('Cek Ulang',
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Tertiary: Exit button (small text)
+                TextButton(
+                  onPressed: widget.onExit,
+                  child: Text(
+                    'Keluar dari Aplikasi',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade500, decoration: TextDecoration.underline),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

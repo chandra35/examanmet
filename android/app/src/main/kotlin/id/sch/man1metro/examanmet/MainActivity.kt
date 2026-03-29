@@ -436,11 +436,14 @@ class MainActivity : FlutterActivity() {
                 // Check if this OEM needs special autostart/background permission
                 "needsOemPermission" -> {
                     val manufacturer = Build.MANUFACTURER.lowercase()
+                    // Samsung is NOT in this list — Samsung OneUI does not aggressively
+                    // kill background apps, and supports Lock Task properly.
+                    // Only truly aggressive OEMs that kill background apps go here.
                     val needsPermission = manufacturer in listOf(
                         "vivo", "oppo", "realme", "oneplus",
                         "xiaomi", "redmi", "poco",
                         "huawei", "honor",
-                        "samsung", "meizu", "letv", "asus"
+                        "meizu", "letv", "asus"
                     )
                     val intentActions = getOemAutostartIntents()
                     result.success(mapOf(
@@ -478,6 +481,26 @@ class MainActivity : FlutterActivity() {
                 "openOemPermissionSettings" -> {
                     val opened = openOemAutostartSettings()
                     result.success(opened)
+                }
+
+                // Open Developer Options settings page
+                "openDeveloperSettings" -> {
+                    try {
+                        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        // Fallback to general settings
+                        try {
+                            val intent = Intent(android.provider.Settings.ACTION_SETTINGS)
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e2: Exception) {
+                            result.success(false)
+                        }
+                    }
                 }
 
                 else -> result.notImplemented()

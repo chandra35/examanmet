@@ -520,6 +520,19 @@ class LockdownService {
       debugPrint('Failed to stop alert sound: $e');
     }
   }
+
+  /// Open Developer Options settings page
+  Future<bool> openDeveloperSettings() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('openDeveloperSettings');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to open developer settings: $e');
+    }
+    return false;
+  }
 }
 
 /// Result of a security audit
