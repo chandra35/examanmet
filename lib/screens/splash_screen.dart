@@ -60,7 +60,7 @@ class _SplashScreenState extends State<SplashScreen> {
     _init();
   }
 
-  Future<bool> _ensureAndroidPermissions() async {
+  Future<bool> _ensureAndroidPermissions(ExamConfig config) async {
     if (!Platform.isAndroid) return true;
 
     setState(() => _statusText = 'Memeriksa izin proteksi...');
@@ -89,6 +89,21 @@ class _SplashScreenState extends State<SplashScreen> {
       missing.add(
         'Akses Jangan Ganggu (DND) belum aktif. Notifikasi dan panggilan belum bisa diblokir penuh.',
       );
+    }
+
+    if (config.detectBluetooth) {
+      var hasBluetoothPermission = await _lockdownService.hasBluetoothPermission();
+      if (!hasBluetoothPermission) {
+        await _lockdownService.requestBluetoothPermission();
+        await Future.delayed(const Duration(seconds: 1));
+        hasBluetoothPermission = await _lockdownService.hasBluetoothPermission();
+      }
+
+      if (!hasBluetoothPermission) {
+        missing.add(
+          'Izin perangkat terdekat / Bluetooth belum aktif. Tanpa izin ini, aplikasi tidak bisa mendeteksi headset Bluetooth.',
+        );
+      }
     }
 
     if (missing.isNotEmpty) {
@@ -176,7 +191,7 @@ class _SplashScreenState extends State<SplashScreen> {
     }
 
     // Permissions
-    final permissionsReady = await _ensureAndroidPermissions();
+    final permissionsReady = await _ensureAndroidPermissions(resolvedConfig);
     if (!permissionsReady) {
       return;
     }

@@ -1,5 +1,6 @@
 package id.sch.man1metro.examanmet
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.ActivityManager
 import android.app.NotificationManager
@@ -12,6 +13,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -32,6 +34,8 @@ import android.view.accessibility.AccessibilityManager
 import android.graphics.PixelFormat
 import android.view.Gravity
 import android.view.MotionEvent
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -53,6 +57,11 @@ class MainActivity : FlutterActivity() {
     private var dndEnabled = false
     private var phoneStateListener: PhoneStateListener? = null
     private var lastLockTaskAttempt: Long = 0
+    private var pendingBluetoothPermissionResult: MethodChannel.Result? = null
+
+    companion object {
+        private const val REQUEST_BLUETOOTH_CONNECT = 2301
+    }
 
     // ===== BRAND-AWARE BEHAVIOR SYSTEM =====
     // Detected once at startup, used throughout the app.
@@ -408,6 +417,25 @@ class MainActivity : FlutterActivity() {
                     val packages = call.argument<List<String>>("packages") ?: emptyList()
                     val running = checkRunningApps(packages)
                     result.success(running)
+                }
+
+                "checkBluetoothPermission" -> {
+                    result.success(hasBluetoothConnectPermission())
+                }
+
+                "requestBluetoothPermission" -> {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                        result.success(true)
+                    } else if (hasBluetoothConnectPermission()) {
+                        result.success(true)
+                    } else {
+                        pendingBluetoothPermissionResult = result
+                        ActivityCompat.requestPermissions(
+                            this,
+                            arrayOf(Manifest.permission.BLUETOOTH_CONNECT),
+                            REQUEST_BLUETOOTH_CONNECT
+                        )
+                    }
                 }
 
                 "isScreenPinned" -> {
@@ -1824,6 +1852,9 @@ class MainActivity : FlutterActivity() {
      */
     private fun isBluetoothEnabled(): Boolean {
         return try {
+            if (!hasBluetoothConnectPermission()) {
+                return false
+            }
             val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             bluetoothManager?.adapter?.isEnabled == true
         } catch (_: Exception) { false }
@@ -1835,6 +1866,9 @@ class MainActivity : FlutterActivity() {
     private fun getConnectedBluetoothDevices(): List<String> {
         val devices = mutableListOf<String>()
         try {
+            if (!hasBluetoothConnectPermission()) {
+                return devices
+            }
             val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             val adapter = bluetoothManager?.adapter ?: return devices
 
@@ -1868,6 +1902,14 @@ class MainActivity : FlutterActivity() {
             } catch (_: SecurityException) {}
         } catch (_: Exception) {}
         return devices
+    }
+
+    private fun hasBluetoothConnectPermission(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
     }
 
     // ==================== Headset Detection ====================
@@ -2048,6 +2090,21 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         // Don't call super - Flutter handles back navigation
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == REQUEST_BLUETOOTH_CONNECT) {
+            val granted = grantResults.isNotEmpty() &&
+                grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            pendingBluetoothPermissionResult?.success(granted)
+            pendingBluetoothPermissionResult = null
+        }
     }
 
     override fun onDestroy() {

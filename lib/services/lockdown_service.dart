@@ -366,6 +366,30 @@ class LockdownService {
     return false;
   }
 
+  Future<bool> hasBluetoothPermission() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('checkBluetoothPermission');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to check Bluetooth permission: $e');
+    }
+    return !Platform.isAndroid;
+  }
+
+  Future<bool> requestBluetoothPermission() async {
+    try {
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('requestBluetoothPermission');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to request Bluetooth permission: $e');
+    }
+    return !Platform.isAndroid;
+  }
+
   /// Request DND policy access (opens system settings page).
   /// User must manually enable DND access for ExaManmet.
   Future<bool> requestDndAccess() async {
