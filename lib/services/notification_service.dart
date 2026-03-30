@@ -129,7 +129,16 @@ class NotificationService {
       final sessionId = data['session_id'] as String? ?? '';
       final isLocked = data['is_locked'] == '1';
       final reason = data['lock_reason'] as String?;
+      final appliesToAll = data['scope'] == 'global' || data['target'] == 'all';
       debugPrint('[FCM] Lock command: session=$sessionId locked=$isLocked reason=$reason');
+
+      // Ignore targeted lock commands when the app cannot positively match
+      // the intended session/device. This avoids accidental global lock/unlock
+      // effects from a broadcast topic.
+      if (sessionId.isNotEmpty && !appliesToAll) {
+        debugPrint('[FCM] Ignoring targeted lock command without a trusted local session match');
+        return true;
+      }
 
       // Always persist to SharedPreferences so background handler can save state
       _persistLockState(sessionId, isLocked, reason);

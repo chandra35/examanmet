@@ -151,6 +151,19 @@ class LockdownService {
     }
   }
 
+  Future<bool> closeApp() async {
+    try {
+      await disableLockdown();
+      if (Platform.isAndroid) {
+        final result = await _channel.invokeMethod('closeApp');
+        return result == true;
+      }
+    } catch (e) {
+      debugPrint('Failed to close app natively: $e');
+    }
+    return false;
+  }
+
   /// Start listening to native security events
   void _startSecurityEventListener() {
     _securityEventSub?.cancel();

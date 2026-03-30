@@ -30,7 +30,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleInstance"
+            android:launchMode="singleTask"
+            android:lockTaskMode="normal"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
@@ -38,9 +39,6 @@
             android:windowSoftInputMode="adjustResize"
             android:screenOrientation="portrait"
             android:excludeFromRecents="true"
-            android:showOnLockScreen="true"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
             android:resizeableActivity="false"
             android:supportsPictureInPicture="false">
             <!-- Specifies an Android theme to apply to this Activity as soon as

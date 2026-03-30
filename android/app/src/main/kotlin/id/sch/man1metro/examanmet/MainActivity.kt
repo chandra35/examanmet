@@ -52,7 +52,7 @@ class MainActivity : FlutterActivity() {
     private var previousDndFilter: Int = NotificationManager.INTERRUPTION_FILTER_ALL
     private var dndEnabled = false
     private var phoneStateListener: PhoneStateListener? = null
-    private var lastLockTaskAttempt: Long = 0  // Prevent re-pin loop on Samsung
+    private var lastLockTaskAttempt: Long = 0
 
     // ===== BRAND-AWARE BEHAVIOR SYSTEM =====
     // Detected once at startup, used throughout the app.
@@ -69,20 +69,57 @@ class MainActivity : FlutterActivity() {
         "infinix", "tecno", "itel"  // Transsion brands
     )
 
-    // Screen pinning (Lock Task) is DISABLED for ALL brands.
-    // Too many brands (Samsung, Vivo, Infinix, etc.) show persistent confirmation
-    // dialogs that loop endlessly. Our other protections are sufficient:
-    // - Immersive mode (hides nav/status bar)
-    // - Status bar overlay blocker (6dp transparent strip)
-    // - DND mode (blocks notifications)
-    // - collapseStatusBar() via reflection
-    // - bringAppToFront on pause/stop
+    // Screen pinning is now mandatory on all supported Android devices.
+    // The anti-loop strategy is handled by guarded start/stop calls below,
+    // not by skipping pinning per brand.
     private val shouldSkipScreenPinning: Boolean
-        get() = true  // Always skip — all brands use immersive + overlay instead
+        get() = Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP
 
     // Computed properties
     private val shouldSkipImmersiveWhenPinned: Boolean
         get() = BRANDS_SKIP_IMMERSIVE_WHEN_PINNED.any { deviceBrand.contains(it) }
+
+    private val shouldUseLegacyStatusBarCollapse: Boolean
+        get() = Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
+            !deviceBrand.contains("infinix") &&
+            !deviceBrand.contains("tecno") &&
+            !deviceBrand.contains("itel")
+
+    private fun canAttemptLockTask(): Boolean {
+        if (shouldSkipScreenPinning) return false
+        if (isInLockTaskMode()) return false
+        val now = System.currentTimeMillis()
+        return now - lastLockTaskAttempt > 2000L
+    }
+
+    private fun startLockTaskSafely() {
+        if (!canAttemptLockTask()) {
+            debugLog("Skipping startLockTaskSafely: skip=$shouldSkipScreenPinning inLockTask=${isInLockTaskMode()} lockdown=$isLockdownActive exiting=$isExiting")
+            return
+        }
+        try {
+            lastLockTaskAttempt = System.currentTimeMillis()
+            debugLog("Attempting startLockTask for brand: $deviceBrand")
+            startLockTask()
+            debugLog("Screen pinning started for brand: $deviceBrand")
+        } catch (e: Exception) {
+            debugLog("Screen pinning failed: ${e.message}")
+        }
+    }
+
+    private fun stopLockTaskSafely() {
+        if (shouldSkipScreenPinning || !isInLockTaskMode()) return
+        try {
+            stopLockTask()
+        } catch (e: Exception) {
+            debugLog("Stop lock task failed: ${e.message}")
+        }
+    }
+
+    private fun collapseStatusBarIfNeeded(force: Boolean = false) {
+        if (isInLockTaskMode() && !force) return
+        collapseStatusBar()
+    }
 
     // Bluetooth state change receiver
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -128,9 +165,8 @@ class MainActivity : FlutterActivity() {
                 val skipImmersive = shouldSkipImmersiveWhenPinned && isInLockTaskMode()
                 if (!skipImmersive) {
                     hideSystemUI()
-                    collapseStatusBar()
                 }
-                handler.postDelayed(this, 800)
+                handler.postDelayed(this, if (isInLockTaskMode()) 1200L else 850L)
             }
         }
     }
@@ -236,27 +272,23 @@ class MainActivity : FlutterActivity() {
                 "startKioskMode" -> {
                     try {
                         isLockdownActive = true
+                        lastLockTaskAttempt = 0
                         isExiting = false  // Reset exit flag when starting lockdown
+                        debugLog("startKioskMode invoked with protection=$protectionLevel brand=$deviceBrand")
                         runOnUiThread {
                             hideSystemUI()
-                            // Only add overlay blocker on full protection level
-                            if (protectionLevel == "full") {
-                                addStatusBarBlocker()
-                            }
-                            // Screen Pinning: completely blocks status bar, home, recent
-                            // Shows system dialog for confirmation on first call
-                            // Brand-aware: skip on brands with dialog loop issues
-                            if (!shouldSkipScreenPinning) {
-                                try {
-                                    startLockTask()
-                                    lastLockTaskAttempt = System.currentTimeMillis()
-                                } catch (e: Exception) {
-                                    debugLog("Screen pinning failed: ${e.message}")
-                                }
-                            } else {
-                                debugLog("Screen pinning skipped for brand: $deviceBrand")
-                            }
+                            // Add overlay blocker on ALL protection levels to block status bar swipe
+                            addStatusBarBlocker()
+                            startLockTaskSafely()
                         }
+                        handler.postDelayed({
+                            if (isLockdownActive && !isExiting) {
+                                runOnUiThread {
+                                    hideSystemUI()
+                                    startLockTaskSafely()
+                                }
+                            }
+                        }, 700)
                         handler.post(immersiveRunnable)
                         // Only run aggressive security audit on full protection
                         if (protectionLevel == "full") {
@@ -281,14 +313,7 @@ class MainActivity : FlutterActivity() {
                         // Remove ALL pending handler callbacks to prevent any lingering actions
                         handler.removeCallbacksAndMessages(null)
                         runOnUiThread {
-                            // Stop screen pinning first (only if it was started)
-                            if (!shouldSkipScreenPinning) {
-                                try {
-                                    stopLockTask()
-                                } catch (e: Exception) {
-                                    debugLog("Stop lock task failed: ${e.message}")
-                                }
-                            }
+                            stopLockTaskSafely()
                             removeStatusBarBlocker()
                             showSystemUI()
                         }
@@ -298,6 +323,32 @@ class MainActivity : FlutterActivity() {
                         // Re-post only the non-lockdown related runnables if needed
                         result.success(true)
                     } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+
+                "closeApp" -> {
+                    try {
+                        isLockdownActive = false
+                        isExiting = true
+                        handler.removeCallbacksAndMessages(null)
+                        disableDndMode()
+                        stopPhoneStateListener()
+                        runOnUiThread {
+                            stopLockTaskSafely()
+                            removeStatusBarBlocker()
+                            showSystemUI()
+                            moveTaskToBack(true)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                finishAndRemoveTask()
+                            } else {
+                                finishAffinity()
+                                finish()
+                            }
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        debugLog("closeApp failed: ${e.message}")
                         result.success(false)
                     }
                 }
@@ -319,12 +370,33 @@ class MainActivity : FlutterActivity() {
                 "requestOverlayPermission" -> {
                     try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                            val intent = Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                android.net.Uri.parse("package:$packageName")
+                            val intents = listOf(
+                                Intent(
+                                    "android.settings.MANAGE_APP_OVERLAY_PERMISSION",
+                                    android.net.Uri.parse("package:$packageName")
+                                ),
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    android.net.Uri.parse("package:$packageName")
+                                ),
+                                Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    android.net.Uri.parse("package:$packageName")
+                                )
                             )
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            startActivity(intent)
+                            var launched = false
+                            for (intent in intents) {
+                                try {
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    startActivity(intent)
+                                    launched = true
+                                    break
+                                } catch (_: Exception) {}
+                            }
+                            if (!launched) {
+                                result.success(false)
+                                return@setMethodCallHandler
+                            }
                         }
                         result.success(true)
                     } catch (e: Exception) {
@@ -562,14 +634,6 @@ class MainActivity : FlutterActivity() {
                 return true
             } catch (_: Exception) {}
         }
-        // Fallback: open app info page where user can find battery/background settings
-        try {
-            val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-            intent.data = android.net.Uri.parse("package:$packageName")
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-            return true
-        } catch (_: Exception) {}
         return false
     }
 
@@ -856,31 +920,45 @@ class MainActivity : FlutterActivity() {
 
     /**
      * Programmatically collapse the notification/status bar panel.
-     * Uses reflection to access hidden StatusBarManager.collapsePanels() API.
+     * On Android 12+ and Transsion ROMs, avoid hidden API calls that only spam
+     * denied warnings and rely on immersive mode + overlay interception instead.
      */
     @Suppress("DiscouragedPrivateApi")
     private fun collapseStatusBar() {
-        try {
-            val sbService = getSystemService("statusbar")
-            if (sbService != null) {
-                val clazz = sbService.javaClass
-                val collapse = clazz.getMethod("collapsePanels")
-                collapse.invoke(sbService)
-            }
-        } catch (_: Exception) {
-            // Fallback: send CLOSE_SYSTEM_DIALOGS broadcast (works on Android < 12)
+        // Method 1: legacy collapse path for Android < 12 and non-Transsion ROMs.
+        if (shouldUseLegacyStatusBarCollapse) {
+            try {
+                val sbService = getSystemService("statusbar")
+                if (sbService != null) {
+                    val clazz = sbService.javaClass
+                    val collapse = clazz.getMethod("collapsePanels")
+                    collapse.invoke(sbService)
+                    return
+                }
+            } catch (_: Exception) {}
+
             try {
                 @Suppress("DEPRECATION")
                 val closeIntent = Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
                 sendBroadcast(closeIntent)
+                return
             } catch (_: Exception) {}
         }
+
+        // Method 2: safest fallback — force immersive mode again.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window.insetsController?.hide(
+                    WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars()
+                )
+            }
+        } catch (_: Exception) {}
     }
 
     /**
-     * Add a thin invisible overlay on the very top edge of the screen
+     * Add an invisible overlay on the top edge of the screen
      * to physically block swipe-down gestures from reaching the system.
-     * Height: only 6dp (the gesture detection zone) — does NOT overlap toolbar.
+     * Height: full status bar height + buffer to reliably intercept swipe gestures.
      * Requires SYSTEM_ALERT_WINDOW permission.
      */
     private fun addStatusBarBlocker() {
@@ -895,18 +973,25 @@ class MainActivity : FlutterActivity() {
             val blocker = View(this)
             blocker.setBackgroundColor(0) // Fully transparent
 
-            // Consume all touches in this thin strip to block swipe-down gesture
-            blocker.setOnTouchListener { _, _ ->
+            // Consume ALL touch events in this strip to block swipe-down gesture
+            blocker.setOnTouchListener { _, event ->
                 if (isLockdownActive) {
-                    collapseStatusBar()
-                    true // Consume the event
+                    // On any touch in this zone, immediately re-hide system UI
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                            hideSystemUI()
+                            collapseStatusBarIfNeeded(force = true)
+                        }
+                    }
+                    true // Consume the event — never let it reach the system
                 } else {
                     false
                 }
             }
 
-            // Very thin: only 6dp — just enough to catch the swipe-start gesture
-            val blockerHeight = (6 * resources.displayMetrics.density).toInt()
+            // Use full status bar height + generous buffer (10dp extra)
+            // to reliably catch swipe gestures on all Samsung/OEM devices
+            val blockerHeight = getStatusBarHeight() + (10 * resources.displayMetrics.density).toInt()
 
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -1034,7 +1119,7 @@ class MainActivity : FlutterActivity() {
                             handler.postDelayed({
                                 if (isLockdownActive && !isExiting) {
                                     hideSystemUI()
-                                    collapseStatusBar()
+                                    collapseStatusBarIfNeeded()
                                     if (protectionLevel == "full") {
                                         bringAppToFront()
                                     }
@@ -1083,24 +1168,40 @@ class MainActivity : FlutterActivity() {
 
     /**
      * Listen for system UI visibility changes and immediately re-hide.
-     * This catches the moment user swipes down to reveal status bar
-     * and hides it back almost instantly (< 100ms).
+     * Uses both legacy and modern API for maximum coverage.
      */
     @Suppress("DEPRECATION")
     private fun setupSystemUiVisibilityListener() {
+        // Legacy API (Android < 11) — deprecated but still works
         window.decorView.setOnSystemUiVisibilityChangeListener { visibility ->
             if (isLockdownActive && !isExiting) {
-                // If any system bar became visible, re-hide immediately
                 val isFullscreen = visibility and View.SYSTEM_UI_FLAG_FULLSCREEN != 0
                 if (!isFullscreen) {
-                    // Status bar appeared — hide it immediately
                     handler.postDelayed({
                         if (isLockdownActive && !isExiting) {
                             hideSystemUI()
-                            collapseStatusBar()
+                            collapseStatusBarIfNeeded()
                         }
-                    }, 50)  // 50ms delay — instant to human eyes
+                    }, 50)
                 }
+            }
+        }
+
+        // Modern API (Android 11+) — watch for WindowInsets changes
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.decorView.setOnApplyWindowInsetsListener { view, insets ->
+                if (isLockdownActive && !isExiting) {
+                    val statusBarsVisible = insets.isVisible(WindowInsets.Type.statusBars())
+                    if (statusBarsVisible) {
+                        // Status bar is trying to appear — force hide immediately
+                        handler.post {
+                            if (isLockdownActive && !isExiting) {
+                                hideSystemUI()
+                            }
+                        }
+                    }
+                }
+                view.onApplyWindowInsets(insets)
             }
         }
     }
@@ -1114,7 +1215,7 @@ class MainActivity : FlutterActivity() {
             window.insetsController?.let { controller ->
                 controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
                 controller.systemBarsBehavior =
-                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    WindowInsetsController.BEHAVIOR_DEFAULT
             }
         } else {
             @Suppress("DEPRECATION")
@@ -1173,7 +1274,7 @@ class MainActivity : FlutterActivity() {
             // Brand-aware: skip when pinned on problematic brands
             val skipImmersive = shouldSkipImmersiveWhenPinned && isInLockTaskMode()
             if (!skipImmersive) {
-                collapseStatusBar()
+                collapseStatusBarIfNeeded()
                 hideSystemUI()
             }
             // Only do aggressive retries + bringToFront on full protection
@@ -1182,13 +1283,13 @@ class MainActivity : FlutterActivity() {
                 val firstDelay = if (isOldApi) 200L else 50L
                 handler.postDelayed({
                     if (isLockdownActive && !isExiting) {
-                        collapseStatusBar()
+                        collapseStatusBarIfNeeded()
                         hideSystemUI()
                     }
                 }, firstDelay)
                 handler.postDelayed({
                     if (isLockdownActive && !isExiting) {
-                        collapseStatusBar()
+                        collapseStatusBarIfNeeded()
                         hideSystemUI()
                         bringAppToFront()
                     }
@@ -1201,11 +1302,16 @@ class MainActivity : FlutterActivity() {
         super.onResume()
         userLeaveHintFired = false  // Reset for next pause cycle
         if (isLockdownActive && !isExiting) {
+            handler.postDelayed({
+                if (isLockdownActive && !isExiting) {
+                    startLockTaskSafely()
+                }
+            }, 250)
             // Brand-aware: skip when pinned on problematic brands
             val skipImmersive = shouldSkipImmersiveWhenPinned && isInLockTaskMode()
             if (!skipImmersive) {
                 hideSystemUI()
-                collapseStatusBar()
+                collapseStatusBarIfNeeded()
             }
             // Stop bring-to-front retries since we're back in foreground
             handler.removeCallbacks(bringToFrontRunnable)
@@ -1262,7 +1368,7 @@ class MainActivity : FlutterActivity() {
                 retryCount = 0
                 return
             }
-            collapseStatusBar()
+            collapseStatusBarIfNeeded()
             bringAppToFront()
             hideSystemUI()
             retryCount++
@@ -1297,11 +1403,11 @@ class MainActivity : FlutterActivity() {
             // Only bring-to-front on full protection level
             if (protectionLevel == "full") {
                 bringAppToFront()
-                collapseStatusBar()
+                collapseStatusBarIfNeeded()
                 val isOldApi = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
                 val baseDelay = if (isOldApi) 300L else 50L
                 handler.postDelayed({
-                    if (isLockdownActive && !isExiting) { bringAppToFront(); collapseStatusBar() }
+                    if (isLockdownActive && !isExiting) { bringAppToFront(); collapseStatusBarIfNeeded() }
                 }, baseDelay)
                 handler.postDelayed({
                     if (isLockdownActive && !isExiting) { bringAppToFront(); hideSystemUI() }
@@ -1426,7 +1532,7 @@ class MainActivity : FlutterActivity() {
                     val deltaX = Math.abs(ev.rawX - touchStartX)
                     if (touchStartY < edgeZone && deltaY > edgeZone * 2 && deltaY > deltaX) {
                         // This is a swipe-down from the top edge — block it
-                        collapseStatusBar()
+                        collapseStatusBarIfNeeded(force = true)
                         hideSystemUI()
                         return true
                     }

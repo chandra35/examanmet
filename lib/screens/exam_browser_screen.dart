@@ -47,18 +47,61 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   Timer? _killAppsTimer;
   int _violationCount = 0;
   static const int _maxViolations = 5;
-  static const int _autoLockThreshold = 5;  // Client-side auto-lock (matches server)
+  static const int _autoLockThreshold =
+      5; // Client-side auto-lock (matches server)
   bool _securityWarningShown = false;
   bool _bluetoothWarningShown = false;
-  bool _isExiting = false;  // Prevents lifecycle hooks from fighting exit
-  DateTime? _lastNativeViolationTime;  // Debounce to avoid double-counting
-  DateTime? _lastPausedTime;  // Debounce rapid paused events (Vivo/OPPO keyboard/login issues)
+  bool _isExiting = false; // Prevents lifecycle hooks from fighting exit
+  DateTime? _lastNativeViolationTime; // Debounce to avoid double-counting
+  DateTime?
+  _lastPausedTime; // Debounce rapid paused events (Vivo/OPPO keyboard/login issues)
   bool _headsetWarningShown = false;
   bool _rootWarningShown = false;
   bool _isRemoteLocked = false;
   String? _remoteLockReason;
+  bool _hasSupervisorUnlock = false;
   ProtectionLevel _protectionLevel = ProtectionLevel.basic;
   String _appVersion = '';
+
+  Future<bool> _ensureLockdownReadiness() async {
+    if (!Platform.isAndroid) return true;
+
+    final hasOverlay = await _lockdownService.hasOverlayPermission();
+    final hasDnd = await _lockdownService.hasDndAccess();
+    if (hasOverlay && hasDnd) return true;
+
+    if (!mounted) return false;
+    final problems = <String>[];
+    if (!hasOverlay) {
+      problems.add('izin overlay belum aktif');
+    }
+    if (!hasDnd) {
+      problems.add('akses DND belum aktif');
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Proteksi perangkat belum lengkap: ${problems.join(' dan ')}. Silakan aktifkan izin lalu coba lagi.',
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/');
+      }
+    });
+    return false;
+  }
+
+  String _formatVersionLabel(PackageInfo info) {
+    final buildNumber = info.buildNumber.trim();
+    if (buildNumber.isEmpty) return info.version;
+    return '${info.version}+${info.buildNumber}';
+  }
 
   @override
   void initState() {
@@ -119,8 +162,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       }
       _lastPausedTime = now;
       _violationCount++;
-      _sessionService.reportViolation('app_switch', detail: 'App went to background');
-      _checkAutoLock();  // Client-side auto-lock check
+      _sessionService.reportViolation(
+        'app_switch',
+        detail: 'App went to background',
+      );
+      _checkAutoLock(); // Client-side auto-lock check
     } else if (state == AppLifecycleState.resumed) {
       // Re-enable lockdown when coming back
       _lockdownService.enableLockdown();
@@ -138,20 +184,27 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Load app version
     try {
       final info = await PackageInfo.fromPlatform();
-      _appVersion = info.version;
+      _appVersion = _formatVersionLabel(info);
     } catch (_) {
       _appVersion = '?.?.?';
     }
 
     // Fetch config
     final config = await _configService.fetchConfig();
+    final hasSupervisorUnlock = await _configService.hasSupervisorPassword();
 
     setState(() {
       _config = config;
+      _hasSupervisorUnlock = hasSupervisorUnlock;
     });
 
     // Initialize lockdown
     _lockdownService.initialize(config);
+
+    final lockdownReady = await _ensureLockdownReadiness();
+    if (!lockdownReady) {
+      return;
+    }
 
     // Determine protection level (checks OEM, permissions, SDK)
     _protectionLevel = await _lockdownService.determineProtectionLevel();
@@ -277,7 +330,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         if (!mounted) return;
         // Light audit — only checks developer options & USB debugging
         _securityAuditTimer = Timer.periodic(
-          const Duration(seconds: 15),  // Less frequent on basic level
+          const Duration(seconds: 15), // Less frequent on basic level
           (_) => _performSecurityAudit(),
         );
       });
@@ -304,7 +357,7 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     _notifService.onLockCommandReceived = (sessionId, isLocked, reason) {
       // Only apply if this FCM targets our session (or no session yet)
       final mySession = _sessionService.sessionId;
-      if (mySession != null && sessionId != mySession.toString()) return;
+      if (sessionId.isNotEmpty && mySession?.toString() != sessionId) return;
       if (mounted) {
         setState(() {
           _isRemoteLocked = isLocked;
@@ -312,6 +365,18 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         });
       }
     };
+
+    final pendingLock = await NotificationService.consumePendingLockState();
+    if (pendingLock != null) {
+      final mySession = _sessionService.sessionId;
+      if (pendingLock.sessionId.isEmpty ||
+          mySession?.toString() == pendingLock.sessionId) {
+        setState(() {
+          _isRemoteLocked = pendingLock.isLocked;
+          _remoteLockReason = pendingLock.reason;
+        });
+      }
+    }
 
     // Report protection level to server
     _sessionService.setProtectionLevel(
@@ -442,7 +507,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
           final username = data['username'] as String? ?? '';
           final fullname = data['fullname'] as String? ?? '';
           if (username.isNotEmpty || fullname.isNotEmpty) {
-            debugPrint('ExaManmet: Moodle user detected - username: $username, fullname: $fullname');
+            debugPrint(
+              'ExaManmet: Moodle user detected - username: $username, fullname: $fullname',
+            );
             _sessionService.updateMoodleUser(
               username.isNotEmpty ? username : null,
               fullname.isNotEmpty ? fullname : null,
@@ -467,8 +534,12 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   Future<void> _refreshConfig() async {
     try {
       final latestConfig = await _configService.fetchConfig();
+      final hasSupervisorUnlock = await _configService.hasSupervisorPassword();
       if (mounted) {
-        setState(() => _config = latestConfig);
+        setState(() {
+          _config = latestConfig;
+          _hasSupervisorUnlock = hasSupervisorUnlock;
+        });
       }
     } catch (_) {
       // Silently ignore - use existing config
@@ -509,9 +580,12 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     _webController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(config.userAgent)
-      ..addJavaScriptChannel('ExaManmetBridge', onMessageReceived: (message) {
-        _handleJsBridgeMessage(message.message);
-      })
+      ..addJavaScriptChannel(
+        'ExaManmetBridge',
+        onMessageReceived: (message) {
+          _handleJsBridgeMessage(message.message);
+        },
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
@@ -908,10 +982,13 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             return NavigationDecision.navigate;
           },
           onWebResourceError: (error) {
-            debugPrint('WebView error: ${error.description} (type: ${error.errorType})');
+            debugPrint(
+              'WebView error: ${error.description} (type: ${error.errorType})',
+            );
             // On fatal WebView crash (process killed by OS / OOM), reload the page
             // This commonly happens on budget devices like Vivo Y17
-            if (error.errorType == WebResourceErrorType.webContentProcessTerminated) {
+            if (error.errorType ==
+                WebResourceErrorType.webContentProcessTerminated) {
               debugPrint('[WEBVIEW] Process terminated — reloading...');
               Future.delayed(const Duration(seconds: 1), () {
                 if (mounted) {
@@ -952,7 +1029,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     final hasFloating = await _lockdownService.hasFloatingApps();
     if (hasFloating && mounted) {
       // Log but don't count as violation — just warn
-      _sessionService.reportViolation('floating_app', detail: 'Floating/overlay app detected');
+      _sessionService.reportViolation(
+        'floating_app',
+        detail: 'Floating/overlay app detected',
+      );
       _showWarningBanner(
         icon: Icons.layers_clear_rounded,
         color: Colors.deepOrange,
@@ -967,13 +1047,16 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   /// - Session failed to start (no session_id)
   /// - Server response gets lost
   void _checkAutoLock() {
-    if (_isRemoteLocked || !mounted) return;  // Already locked
+    if (_isRemoteLocked || !mounted) return; // Already locked
 
     if (_violationCount >= _autoLockThreshold) {
-      debugPrint('[AUTO-LOCK] Client-side lock triggered: $_violationCount violations >= $_autoLockThreshold threshold');
+      debugPrint(
+        '[AUTO-LOCK] Client-side lock triggered: $_violationCount violations >= $_autoLockThreshold threshold',
+      );
       setState(() {
         _isRemoteLocked = true;
-        _remoteLockReason = 'Otomatis dikunci: $_violationCount pelanggaran terdeteksi';
+        _remoteLockReason =
+            'Otomatis dikunci: $_violationCount pelanggaran terdeteksi';
       });
       // Play alert sound
       if (_config?.alertSoundOnViolation == true) {
@@ -991,10 +1074,15 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // home_pressed = user pressed Home button
     // recent_pressed = user opened Recent Apps
     // multi_window_detected = user opened split screen
-    if (event == 'home_pressed' || event == 'recent_pressed' || event == 'multi_window_detected') {
+    if (event == 'home_pressed' ||
+        event == 'recent_pressed' ||
+        event == 'multi_window_detected') {
       _violationCount++;
       _lastNativeViolationTime = DateTime.now();
-      _sessionService.reportViolation('app_switch', detail: 'Security event: $event');
+      _sessionService.reportViolation(
+        'app_switch',
+        detail: 'Security event: $event',
+      );
       _checkAutoLock();
       if (_config?.alertSoundOnViolation == true) {
         _lockdownService.playAlertSound();
@@ -1011,7 +1099,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     if (!mounted || _config == null) return;
 
     try {
-      final threats = await _lockdownService.getSecurityThreats();
+      final threats = _filterSecurityThreats(
+        await _lockdownService.getSecurityThreats(),
+      );
 
       if (!mounted) return;
 
@@ -1020,16 +1110,23 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
         // Report each threat type
         if (threats.developerOptionsEnabled) {
-          _sessionService.reportViolation('developer_mode', detail: 'Developer options enabled');
+          _sessionService.reportViolation(
+            'developer_mode',
+            detail: 'Developer options enabled',
+          );
         }
         if (threats.usbDebuggingEnabled) {
-          _sessionService.reportViolation('usb_debugging', detail: 'USB debugging enabled');
+          _sessionService.reportViolation(
+            'usb_debugging',
+            detail: 'USB debugging enabled',
+          );
         }
 
         // ALL threats are blocking — student must fix before continuing
         // Only play alarm for critical threats (multiwindow, PiP, root, accessibility)
         // Dev Options / USB Debugging just show blocking dialog without alarm
-        if (threats.hasCriticalThreats && _config?.alertSoundOnViolation == true) {
+        if (threats.hasCriticalThreats &&
+            _config?.alertSoundOnViolation == true) {
           _lockdownService.playAlertSound();
         }
         // Show BLOCKING dialog with "Buka Pengaturan" button
@@ -1038,6 +1135,27 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     } catch (e) {
       debugPrint('Security audit error: $e');
     }
+  }
+
+  SecurityAuditResult _filterSecurityThreats(SecurityAuditResult threats) {
+    final config = _config;
+    if (config == null) return threats;
+
+    return SecurityAuditResult(
+      developerOptionsEnabled:
+          threats.developerOptionsEnabled &&
+          !config.testingAllowDeveloperOptions,
+      usbDebuggingEnabled:
+          threats.usbDebuggingEnabled && !config.testingAllowUsbDebugging,
+      accessibilityServices: threats.accessibilityServices,
+      isMultiWindow: threats.isMultiWindow,
+      hasOverlayPermission: threats.hasOverlayPermission,
+      isInPiP: threats.isInPiP,
+      isRooted: threats.isRooted,
+      bluetoothEnabled: threats.bluetoothEnabled,
+      bluetoothDevices: threats.bluetoothDevices,
+      headsetConnected: threats.headsetConnected,
+    );
   }
 
   /// Show a blocking security dialog — student must fix settings first.
@@ -1073,7 +1191,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         );
       },
       transitionBuilder: (ctx, anim, secondAnim, child) {
-        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        final curvedAnim = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutBack,
+        );
         return Transform.scale(
           scale: curvedAnim.value,
           child: Opacity(opacity: anim.value, child: child),
@@ -1088,17 +1209,20 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     if (t.developerOptionsEnabled) {
       instructions.add(
         '🔧 Developer Options:\n'
-        '   Setelan → Opsi Pengembang → NONAKTIFKAN toggle di atas');
+        '   Setelan → Opsi Pengembang → NONAKTIFKAN toggle di atas',
+      );
     }
     if (t.usbDebuggingEnabled) {
       instructions.add(
         '🔌 USB Debugging:\n'
-        '   Setelan → Opsi Pengembang → USB Debugging → NONAKTIFKAN');
+        '   Setelan → Opsi Pengembang → USB Debugging → NONAKTIFKAN',
+      );
     }
     if (t.accessibilityServices.isNotEmpty) {
       instructions.add(
         '♿ Accessibility Service:\n'
-        '   Setelan → Aksesibilitas → Nonaktifkan: ${t.accessibilityServices.join(", ")}');
+        '   Setelan → Aksesibilitas → Nonaktifkan: ${t.accessibilityServices.join(", ")}',
+      );
     }
     if (t.isMultiWindow) {
       instructions.add('📱 Split Screen: Tutup layar terbagi');
@@ -1118,9 +1242,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     // Stop alert sound
     _lockdownService.stopAlertSound();
     // Disable lockdown so app can exit cleanly
-    await _lockdownService.disableLockdown();
-    // Force kill the app process — exit(0) is reliable unlike SystemNavigator.pop()
-    exit(0);
+    final closed = await _lockdownService.closeApp();
+    await WakelockPlus.disable();
+    if (!closed) {
+      await SystemNavigator.pop();
+    }
   }
 
   /// Reusable blocking exit dialog for security violations (Bluetooth, Headset, etc.)
@@ -1147,7 +1273,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         return PopScope(
           canPop: false,
           child: Dialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
             elevation: 20,
             child: Container(
               constraints: const BoxConstraints(maxWidth: 380),
@@ -1195,7 +1323,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                       ),
                       const SizedBox(height: 6),
                       Container(
-                        width: 40, height: 3,
+                        width: 40,
+                        height: 3,
                         decoration: BoxDecoration(
                           color: titleColor.withOpacity(0.3),
                           borderRadius: BorderRadius.circular(2),
@@ -1209,7 +1338,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                         decoration: BoxDecoration(
                           color: titleColor.withOpacity(0.06),
                           borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: titleColor.withOpacity(0.2)),
+                          border: Border.all(
+                            color: titleColor.withOpacity(0.2),
+                          ),
                         ),
                         child: Text(
                           threatDescription,
@@ -1233,15 +1364,33 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Row(children: [
-                              Icon(Icons.help_outline_rounded, size: 16, color: Colors.orange.shade800),
-                              const SizedBox(width: 6),
-                              Text('Cara memperbaiki:',
-                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.orange.shade800)),
-                            ]),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.help_outline_rounded,
+                                  size: 16,
+                                  color: Colors.orange.shade800,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Cara memperbaiki:',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.orange.shade800,
+                                  ),
+                                ),
+                              ],
+                            ),
                             const SizedBox(height: 10),
-                            Text(instructions,
-                              style: TextStyle(fontSize: 12, color: Colors.grey.shade800, height: 1.6)),
+                            Text(
+                              instructions,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade800,
+                                height: 1.6,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1254,20 +1403,31 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                           style: ElevatedButton.styleFrom(
                             backgroundColor: buttonColor,
                             foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
                             elevation: 4,
                             shadowColor: buttonColor.withOpacity(0.4),
                           ),
                           onPressed: () => _exitAppDueToSecurity(),
                           icon: const Icon(Icons.exit_to_app_rounded, size: 22),
-                          label: Text(buttonText,
-                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                          label: Text(
+                            buttonText,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 10),
                       Text(
                         'Perbaiki masalah di atas, lalu buka kembali aplikasi ini.',
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade500, height: 1.4),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey.shade500,
+                          height: 1.4,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ],
@@ -1279,7 +1439,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         );
       },
       transitionBuilder: (ctx, anim, secondAnim, child) {
-        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        final curvedAnim = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutBack,
+        );
         return Transform.scale(
           scale: curvedAnim.value,
           child: Opacity(opacity: anim.value, child: child),
@@ -1306,7 +1469,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     if (btStatus.enabled && !_bluetoothWarningShown) {
       _bluetoothWarningShown = true;
-      _sessionService.reportViolation('bluetooth', detail: 'Bluetooth active, devices: ${btStatus.connectedDevices.join(", ")}');
+      _sessionService.reportViolation(
+        'bluetooth',
+        detail:
+            'Bluetooth active, devices: ${btStatus.connectedDevices.join(", ")}',
+      );
 
       // Play alert sound
       if (_config?.alertSoundOnViolation == true) {
@@ -1323,11 +1490,13 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         iconGradient: [Colors.blue.shade700, Colors.blue.shade400],
         title: 'BLUETOOTH AKTIF!',
         titleColor: Colors.blue.shade700,
-        threatDescription: 'Bluetooth pada perangkat Anda dalam keadaan AKTIF!\n\n'
+        threatDescription:
+            'Bluetooth pada perangkat Anda dalam keadaan AKTIF!\n\n'
             'Perangkat Bluetooth terdeteksi:\n$deviceInfo\n\n'
             'Penggunaan earpiece/headset Bluetooth saat ujian '
             'dianggap sebagai KECURANGAN.',
-        instructions: '1. Buka Setelan (Settings)\n'
+        instructions:
+            '1. Buka Setelan (Settings)\n'
             '2. Buka menu Bluetooth\n'
             '3. Matikan toggle Bluetooth\n'
             '4. Buka kembali aplikasi ini',
@@ -1347,7 +1516,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     if (connected && !_headsetWarningShown) {
       _headsetWarningShown = true;
-      _sessionService.reportViolation('headset', detail: 'Headset/earphone connected');
+      _sessionService.reportViolation(
+        'headset',
+        detail: 'Headset/earphone connected',
+      );
 
       // Play alert sound
       if (_config?.alertSoundOnViolation == true) {
@@ -1360,10 +1532,12 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         iconGradient: [Colors.purple.shade700, Colors.purple.shade400],
         title: 'HEADSET TERDETEKSI!',
         titleColor: Colors.purple.shade700,
-        threatDescription: 'Terdeteksi headset/earphone terhubung ke perangkat Anda!\n\n'
+        threatDescription:
+            'Terdeteksi headset/earphone terhubung ke perangkat Anda!\n\n'
             'Penggunaan headset/earphone saat ujian berlangsung '
             'TIDAK DIPERBOLEHKAN.',
-        instructions: '1. Cabut/lepaskan headset/earphone dari HP\n'
+        instructions:
+            '1. Cabut/lepaskan headset/earphone dari HP\n'
             '2. Jika wireless, matikan Bluetooth\n'
             '3. Buka kembali aplikasi ini',
         buttonText: 'Keluar & Lepas Headset',
@@ -1382,7 +1556,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
 
     if (rooted && !_rootWarningShown) {
       _rootWarningShown = true;
-      _sessionService.reportViolation('root_detected', detail: 'Rooted device detected');
+      _sessionService.reportViolation(
+        'root_detected',
+        detail: 'Rooted device detected',
+      );
 
       // Play alert sound for rooted device
       if (_config?.alertSoundOnViolation == true) {
@@ -1404,8 +1581,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     if (!mounted) return;
     try {
       final stopwatch = Stopwatch()..start();
-      final socket = await Socket.connect('8.8.8.8', 53,
-          timeout: const Duration(seconds: 3));
+      final socket = await Socket.connect(
+        '8.8.8.8',
+        53,
+        timeout: const Duration(seconds: 3),
+      );
       stopwatch.stop();
       socket.destroy();
       if (mounted) {
@@ -1427,7 +1607,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     if (!mounted) return;
 
     if (kb.isAdware) {
-      _sessionService.reportViolation('adware_keyboard', detail: 'Adware keyboard detected: ${kb.keyboardName}');
+      _sessionService.reportViolation(
+        'adware_keyboard',
+        detail: 'Adware keyboard detected: ${kb.keyboardName}',
+      );
 
       // Play alert sound
       if (_config?.alertSoundOnViolation == true) {
@@ -1452,7 +1635,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         return PopScope(
           canPop: false,
           child: Dialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
             elevation: 20,
             child: Container(
               constraints: const BoxConstraints(maxWidth: 380),
@@ -1474,7 +1659,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                           gradient: LinearGradient(
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
-                            colors: [Colors.orange.shade700, Colors.orange.shade400],
+                            colors: [
+                              Colors.orange.shade700,
+                              Colors.orange.shade400,
+                            ],
                           ),
                           shape: BoxShape.circle,
                           boxShadow: [
@@ -1485,7 +1673,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                             ),
                           ],
                         ),
-                        child: const Icon(Icons.keyboard_alt_outlined, color: Colors.white, size: 44),
+                        child: const Icon(
+                          Icons.keyboard_alt_outlined,
+                          color: Colors.white,
+                          size: 44,
+                        ),
                       ),
                       const SizedBox(height: 16),
                       Text(
@@ -1500,7 +1692,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                       ),
                       const SizedBox(height: 6),
                       Container(
-                        width: 40, height: 3,
+                        width: 40,
+                        height: 3,
                         decoration: BoxDecoration(
                           color: Colors.orange.shade200,
                           borderRadius: BorderRadius.circular(2),
@@ -1521,13 +1714,17 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                           children: [
                             Text(
                               'Keyboard aktif saat ini:',
-                              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade600,
+                              ),
                             ),
                             const SizedBox(height: 4),
                             Text(
                               kb.keyboardName,
                               style: TextStyle(
-                                fontSize: 15, fontWeight: FontWeight.w700,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
                                 color: Colors.orange.shade900,
                               ),
                             ),
@@ -1537,7 +1734,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                               'muncul tiba-tiba dan mengganggu jalannya ujian.\n\n'
                               'Ganti ke keyboard yang aman (Gboard) sebelum melanjutkan.',
                               style: TextStyle(
-                                fontSize: 13, color: Colors.grey.shade700, height: 1.5,
+                                fontSize: 13,
+                                color: Colors.grey.shade700,
+                                height: 1.5,
                               ),
                             ),
                           ],
@@ -1556,12 +1755,24 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Row(children: [
-                              Icon(Icons.help_outline_rounded, size: 16, color: Colors.blue.shade700),
-                              const SizedBox(width: 6),
-                              Text('Cara mengganti keyboard:',
-                                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.blue.shade700)),
-                            ]),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.help_outline_rounded,
+                                  size: 16,
+                                  color: Colors.blue.shade700,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Cara mengganti keyboard:',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.blue.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
                             const SizedBox(height: 10),
                             Text(
                               '1. Buka Setelan (Settings)\n'
@@ -1570,7 +1781,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                               '4. Ganti ke Gboard atau keyboard bawaan HP\n'
                               '5. Buka kembali aplikasi ini',
                               style: TextStyle(
-                                fontSize: 12, color: Colors.grey.shade800, height: 1.6,
+                                fontSize: 12,
+                                color: Colors.grey.shade800,
+                                height: 1.6,
                               ),
                             ),
                           ],
@@ -1585,20 +1798,33 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.orange.shade700,
                             foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
                             elevation: 4,
-                            shadowColor: Colors.orange.shade700.withOpacity(0.4),
+                            shadowColor: Colors.orange.shade700.withOpacity(
+                              0.4,
+                            ),
                           ),
                           onPressed: () => _exitAppDueToSecurity(),
                           icon: const Icon(Icons.exit_to_app_rounded, size: 22),
-                          label: const Text('Keluar & Ganti Keyboard',
-                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                          label: const Text(
+                            'Keluar & Ganti Keyboard',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 10),
                       Text(
                         'Ganti keyboard di Setelan HP,\nlalu buka kembali aplikasi ini.',
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade500, height: 1.4),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey.shade500,
+                          height: 1.4,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ],
@@ -1610,7 +1836,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
         );
       },
       transitionBuilder: (ctx, anim, secondAnim, child) {
-        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        final curvedAnim = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutBack,
+        );
         return Transform.scale(
           scale: curvedAnim.value,
           child: Opacity(opacity: anim.value, child: child),
@@ -1628,9 +1857,12 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
     }
 
     // Refresh config in background for next time
-    _configService.fetchConfig().then((c) {
-      if (mounted) _config = c;
-    }).catchError((_) {});
+    _configService
+        .fetchConfig()
+        .then((c) {
+          if (mounted) _config = c;
+        })
+        .catchError((_) {});
   }
 
   /// Modern bottom sheet exit confirmation — responsive & compact
@@ -1725,7 +1957,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                           child: OutlinedButton(
                             style: OutlinedButton.styleFrom(
                               foregroundColor: Colors.white70,
-                              side: BorderSide(color: Colors.white.withOpacity(0.15)),
+                              side: BorderSide(
+                                color: Colors.white.withOpacity(0.15),
+                              ),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
                               ),
@@ -1734,7 +1968,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                             onPressed: () => Navigator.pop(ctx),
                             child: const Text(
                               'Batal',
-                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
                           ),
                         ),
@@ -1756,10 +1993,16 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                               Navigator.pop(ctx);
                               _exitExam();
                             },
-                            icon: const Icon(Icons.exit_to_app_rounded, size: 18),
+                            icon: const Icon(
+                              Icons.exit_to_app_rounded,
+                              size: 18,
+                            ),
                             label: const Text(
                               'Keluar',
-                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         ),
@@ -1778,10 +2021,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   Future<void> _exitExam() async {
     _isExiting = true;
     await _sessionService.endSession();
-    await _lockdownService.disableLockdown();
+    final closed = await _lockdownService.closeApp();
     await WakelockPlus.disable();
-    // Force kill the app process — exit(0) is reliable unlike SystemNavigator.pop()
-    exit(0);
+    if (!closed) {
+      await SystemNavigator.pop();
+    }
   }
 
   @override
@@ -1809,7 +2053,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                     color: Colors.white.withOpacity(0.1),
                     border: Border.all(color: Colors.white.withOpacity(0.2)),
                   ),
-                  child: const Icon(Icons.shield_rounded, color: Colors.white, size: 40),
+                  child: const Icon(
+                    Icons.shield_rounded,
+                    color: Colors.white,
+                    size: 40,
+                  ),
                 ),
                 const SizedBox(height: 24),
                 const SizedBox(
@@ -1850,39 +2098,64 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
           child: Stack(
             children: [
               Column(
-              children: [
-                // 6dp spacer to avoid overlap with native status bar blocker overlay
-                const SizedBox(height: 6),
-                // Toolbar (if enabled)
-                if (_config!.showToolbar) _buildToolbar(),
+                children: [
+                  // 6dp spacer to avoid overlap with native status bar blocker overlay
+                  const SizedBox(height: 6),
+                  // Toolbar (if enabled)
+                  if (_config!.showToolbar) _buildToolbar(),
 
-                // Loading indicator
-                if (_isPageLoading)
-                  Container(
-                    height: 3,
-                    decoration: BoxDecoration(
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFF1565C0).withOpacity(0.3),
-                          blurRadius: 4,
-                          offset: const Offset(0, 1),
-                        ),
-                      ],
+                  // Loading indicator
+                  if (_isPageLoading)
+                    Container(
+                      height: 3,
+                      decoration: BoxDecoration(
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF1565C0).withOpacity(0.3),
+                            blurRadius: 4,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                      child: LinearProgressIndicator(
+                        value: _loadingProgress > 0 ? _loadingProgress : null,
+                        backgroundColor: Colors.grey.shade100,
+                        color: const Color(0xFF1565C0),
+                        minHeight: 3,
+                      ),
                     ),
-                    child: LinearProgressIndicator(
-                      value: _loadingProgress > 0 ? _loadingProgress : null,
-                      backgroundColor: Colors.grey.shade100,
-                      color: const Color(0xFF1565C0),
-                      minHeight: 3,
+
+                  // WebView
+                  Expanded(child: WebViewWidget(controller: _webController)),
+                ],
+              ),
+
+              if (_appVersion.isNotEmpty)
+                Positioned(
+                  left: 12,
+                  bottom: 12,
+                  child: IgnorePointer(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.55),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        'v$_appVersion',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
                     ),
                   ),
-
-                // WebView
-                Expanded(
-                  child: WebViewWidget(controller: _webController),
                 ),
-              ],
-            ),
 
               // Remote lock overlay
               if (_isRemoteLocked) _buildLockOverlay(),
@@ -1905,10 +2178,16 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
           builder: (ctx, setDialogState) {
             return AlertDialog(
               backgroundColor: const Color(0xFF1B1B2F),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
               title: Row(
                 children: [
-                  Icon(Icons.vpn_key_rounded, color: Colors.amber.shade300, size: 22),
+                  Icon(
+                    Icons.vpn_key_rounded,
+                    color: Colors.amber.shade300,
+                    size: 22,
+                  ),
                   const SizedBox(width: 10),
                   const Text(
                     'Password Pengawas',
@@ -1932,11 +2211,15 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                     style: const TextStyle(color: Colors.white),
                     decoration: InputDecoration(
                       hintText: 'Password',
-                      hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                      hintStyle: TextStyle(
+                        color: Colors.white.withOpacity(0.3),
+                      ),
                       errorText: errorText,
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: Colors.white.withOpacity(0.3)),
+                        borderSide: BorderSide(
+                          color: Colors.white.withOpacity(0.3),
+                        ),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
@@ -1953,9 +2236,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                     ),
                     onSubmitted: (_) {
                       // Allow submit with Enter key
-                      _verifySupervisorPassword(controller.text, ctx, setDialogState, (msg) {
-                        errorText = msg;
-                      });
+                      _verifySupervisorPassword(
+                        controller.text,
+                        ctx,
+                        setDialogState,
+                        (msg) {
+                          errorText = msg;
+                        },
+                      );
                     },
                   ),
                 ],
@@ -1963,18 +2251,28 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(ctx).pop(),
-                  child: Text('Batal', style: TextStyle(color: Colors.white.withOpacity(0.5))),
+                  child: Text(
+                    'Batal',
+                    style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                  ),
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    _verifySupervisorPassword(controller.text, ctx, setDialogState, (msg) {
-                      errorText = msg;
-                    });
+                    _verifySupervisorPassword(
+                      controller.text,
+                      ctx,
+                      setDialogState,
+                      (msg) {
+                        errorText = msg;
+                      },
+                    );
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.amber.shade700,
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
                   ),
                   child: const Text('Unlock'),
                 ),
@@ -1987,14 +2285,13 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
   }
 
   /// Verify entered password against cached supervisor password
-  void _verifySupervisorPassword(
+  Future<void> _verifySupervisorPassword(
     String entered,
     BuildContext dialogContext,
     void Function(void Function()) setDialogState,
     void Function(String?) setError,
-  ) {
-    final correctPassword = _config?.supervisorPassword;
-    if (correctPassword == null || correctPassword.isEmpty) {
+  ) async {
+    if (!_hasSupervisorUnlock) {
       setDialogState(() => setError('Password pengawas belum dikonfigurasi'));
       return;
     }
@@ -2002,7 +2299,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       setDialogState(() => setError('Password tidak boleh kosong'));
       return;
     }
-    if (entered == correctPassword) {
+    final verified = await _configService.verifySupervisorPassword(entered);
+    if (!mounted) return;
+    if (!dialogContext.mounted) return;
+    if (verified) {
       // Password correct — unlock
       Navigator.of(dialogContext).pop();
       setState(() {
@@ -2037,9 +2337,16 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: Colors.red.withOpacity(0.15),
-                    border: Border.all(color: Colors.red.withOpacity(0.4), width: 3),
+                    border: Border.all(
+                      color: Colors.red.withOpacity(0.4),
+                      width: 3,
+                    ),
                   ),
-                  child: const Icon(Icons.lock_rounded, color: Colors.red, size: 52),
+                  child: const Icon(
+                    Icons.lock_rounded,
+                    color: Colors.red,
+                    size: 52,
+                  ),
                 ),
                 const SizedBox(height: 28),
                 const Text(
@@ -2055,7 +2362,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                 const SizedBox(height: 16),
                 if (_remoteLockReason != null && _remoteLockReason!.isNotEmpty)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 12,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.red.withOpacity(0.15),
                       borderRadius: BorderRadius.circular(12),
@@ -2075,7 +2385,11 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.info_outline, color: Colors.amber.shade300, size: 18),
+                    Icon(
+                      Icons.info_outline,
+                      color: Colors.amber.shade300,
+                      size: 18,
+                    ),
                     const SizedBox(width: 8),
                     Text(
                       'Hubungi pengawas untuk membuka kunci',
@@ -2089,16 +2403,20 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                 ),
                 const SizedBox(height: 32),
                 // Offline password unlock button
-                if (_config?.supervisorPassword != null &&
-                    _config!.supervisorPassword!.isNotEmpty)
+                if (_hasSupervisorUnlock)
                   OutlinedButton.icon(
                     onPressed: _showSupervisorPasswordDialog,
                     icon: const Icon(Icons.vpn_key_rounded, size: 18),
                     label: const Text('Unlock dengan Password Pengawas'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.amber.shade300,
-                      side: BorderSide(color: Colors.amber.shade300.withOpacity(0.5)),
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      side: BorderSide(
+                        color: Colors.amber.shade300.withOpacity(0.5),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 12,
+                      ),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8),
                       ),
@@ -2182,10 +2500,12 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               // Back button
               _toolbarButton(
                 icon: Icons.arrow_back_rounded,
-                onTap: _canGoBack ? () async {
-                  await _webController.goBack();
-                  _updateNavState();
-                } : null,
+                onTap: _canGoBack
+                    ? () async {
+                        await _webController.goBack();
+                        _updateNavState();
+                      }
+                    : null,
                 tooltip: 'Kembali',
                 enabled: _canGoBack,
                 size: btnSize,
@@ -2195,10 +2515,12 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               // Forward button
               _toolbarButton(
                 icon: Icons.arrow_forward_rounded,
-                onTap: _canGoForward ? () async {
-                  await _webController.goForward();
-                  _updateNavState();
-                } : null,
+                onTap: _canGoForward
+                    ? () async {
+                        await _webController.goForward();
+                        _updateNavState();
+                      }
+                    : null,
                 tooltip: 'Maju',
                 enabled: _canGoForward,
                 size: btnSize,
@@ -2219,7 +2541,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               GestureDetector(
                 onTap: _measurePing,
                 child: Container(
-                  padding: EdgeInsets.symmetric(horizontal: isCompact ? 5 : 8, vertical: 3),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: isCompact ? 5 : 8,
+                    vertical: 3,
+                  ),
                   margin: const EdgeInsets.symmetric(horizontal: 1),
                   decoration: BoxDecoration(
                     color: Colors.black.withOpacity(0.2),
@@ -2336,7 +2661,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
           children: [
             // Handle bar
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               margin: const EdgeInsets.only(top: 10, bottom: 6),
               decoration: BoxDecoration(
                 color: Colors.grey.shade300,
@@ -2356,8 +2682,14 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                 children: [
                   Icon(Icons.school_rounded, color: Colors.white, size: 22),
                   SizedBox(width: 10),
-                  Text('Menu Moodle',
-                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+                  Text(
+                    'Menu Moodle',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -2379,7 +2711,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               subtitle: 'Daftar kursus yang diikuti',
               onTap: () {
                 Navigator.pop(ctx);
-                _webController.loadRequest(Uri.parse('$moodleUrl/my/courses.php'));
+                _webController.loadRequest(
+                  Uri.parse('$moodleUrl/my/courses.php'),
+                );
               },
             ),
             _moodleMenuItem(
@@ -2405,7 +2739,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
               subtitle: 'Jadwal & event',
               onTap: () {
                 Navigator.pop(ctx);
-                _webController.loadRequest(Uri.parse('$moodleUrl/calendar/view.php'));
+                _webController.loadRequest(
+                  Uri.parse('$moodleUrl/calendar/view.php'),
+                );
               },
             ),
             const Divider(height: 1),
@@ -2442,7 +2778,8 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
           child: Row(
             children: [
               Container(
-                width: 40, height: 40,
+                width: 40,
+                height: 40,
                 decoration: BoxDecoration(
                   color: color.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(10),
@@ -2454,15 +2791,31 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title, style: TextStyle(
-                      fontWeight: FontWeight.w600, fontSize: 14,
-                      color: color == Colors.red.shade600 ? Colors.red.shade600 : Colors.grey.shade800,
-                    )),
-                    Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                        color: color == Colors.red.shade600
+                            ? Colors.red.shade600
+                            : Colors.grey.shade800,
+                      ),
+                    ),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade500,
+                      ),
+                    ),
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right_rounded, color: Colors.grey.shade400, size: 20),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: Colors.grey.shade400,
+                size: 20,
+              ),
             ],
           ),
         ),
@@ -2482,7 +2835,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             Text('Logout Moodle?', style: TextStyle(fontSize: 18)),
           ],
         ),
-        content: const Text('Anda akan keluar dari akun Moodle. Pastikan semua jawaban sudah tersimpan.'),
+        content: const Text(
+          'Anda akan keluar dari akun Moodle. Pastikan semua jawaban sudah tersimpan.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
@@ -2514,7 +2869,9 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
             ),
           ),
         ],
@@ -2729,13 +3086,18 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       transitionDuration: const Duration(milliseconds: 350),
       pageBuilder: (_, __, ___) => const SizedBox.shrink(),
       transitionBuilder: (ctx, anim, secondAnim, child) {
-        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        final curvedAnim = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutBack,
+        );
         return Transform.scale(
           scale: curvedAnim.value,
           child: Opacity(
             opacity: anim.value,
             child: Dialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
               elevation: 20,
               child: Container(
                 constraints: const BoxConstraints(maxWidth: 360),
@@ -2795,7 +3157,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                       // Message in subtle container
                       Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.grey.shade50,
                           borderRadius: BorderRadius.circular(12),
@@ -2867,13 +3232,18 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       transitionDuration: const Duration(milliseconds: 350),
       pageBuilder: (_, __, ___) => const SizedBox.shrink(),
       transitionBuilder: (ctx, anim, secondAnim, child) {
-        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        final curvedAnim = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutBack,
+        );
         return Transform.scale(
           scale: curvedAnim.value,
           child: Opacity(
             opacity: anim.value,
             child: Dialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
               elevation: 20,
               child: Container(
                 constraints: const BoxConstraints(maxWidth: 360),
@@ -2932,7 +3302,10 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
                       // Message in subtle container
                       Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.grey.shade50,
                           borderRadius: BorderRadius.circular(12),
@@ -3090,7 +3463,10 @@ class _WarningBannerWidgetState extends State<_WarningBannerWidget>
                 _controller.reverse().then((_) => widget.onDismiss());
               },
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
                   color: widget.color,
                   borderRadius: BorderRadius.circular(14),
@@ -3150,7 +3526,8 @@ class _SecurityBlockingDialog extends StatefulWidget {
   });
 
   @override
-  State<_SecurityBlockingDialog> createState() => _SecurityBlockingDialogState();
+  State<_SecurityBlockingDialog> createState() =>
+      _SecurityBlockingDialogState();
 }
 
 class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
@@ -3199,7 +3576,8 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
       } else {
         setState(() {
           _isChecking = false;
-          _statusMessage = 'Masih ada ancaman aktif. Silakan perbaiki terlebih dahulu.';
+          _statusMessage =
+              'Masih ada ancaman aktif. Silakan perbaiki terlebih dahulu.';
         });
         // Clear status message after 3 seconds
         Future.delayed(const Duration(seconds: 3), () {
@@ -3252,7 +3630,11 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                       ),
                     ],
                   ),
-                  child: const Icon(Icons.gpp_bad_rounded, color: Colors.white, size: 44),
+                  child: const Icon(
+                    Icons.gpp_bad_rounded,
+                    color: Colors.white,
+                    size: 44,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Text(
@@ -3266,7 +3648,8 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                 ),
                 const SizedBox(height: 6),
                 Container(
-                  width: 40, height: 3,
+                  width: 40,
+                  height: 3,
                   decoration: BoxDecoration(
                     color: Colors.red.shade200,
                     borderRadius: BorderRadius.circular(2),
@@ -3285,21 +3668,41 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Ancaman terdeteksi:',
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.red.shade700)),
-                      const SizedBox(height: 8),
-                      ...widget.descriptions.map((d) => Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(Icons.dangerous_rounded, size: 16, color: Colors.red.shade600),
-                            const SizedBox(width: 6),
-                            Expanded(child: Text(d,
-                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.red.shade800))),
-                          ],
+                      Text(
+                        'Ancaman terdeteksi:',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.red.shade700,
                         ),
-                      )),
+                      ),
+                      const SizedBox(height: 8),
+                      ...widget.descriptions.map(
+                        (d) => Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.dangerous_rounded,
+                                size: 16,
+                                color: Colors.red.shade600,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  d,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.red.shade800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -3316,15 +3719,33 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(children: [
-                        Icon(Icons.help_outline_rounded, size: 16, color: Colors.orange.shade800),
-                        const SizedBox(width: 6),
-                        Text('Cara memperbaiki:',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.orange.shade800)),
-                      ]),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.help_outline_rounded,
+                            size: 16,
+                            color: Colors.orange.shade800,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Cara memperbaiki:',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.orange.shade800,
+                            ),
+                          ),
+                        ],
+                      ),
                       const SizedBox(height: 10),
-                      Text(widget.instructions,
-                        style: TextStyle(fontSize: 12, color: Colors.grey.shade800, height: 1.6)),
+                      Text(
+                        widget.instructions,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade800,
+                          height: 1.6,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -3340,7 +3761,8 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                           Padding(
                             padding: const EdgeInsets.only(right: 8),
                             child: SizedBox(
-                              width: 16, height: 16,
+                              width: 16,
+                              height: 16,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
                                 color: Colors.blue.shade600,
@@ -3353,7 +3775,9 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
-                              color: _isChecking ? Colors.blue.shade600 : Colors.red.shade600,
+                              color: _isChecking
+                                  ? Colors.blue.shade600
+                                  : Colors.red.shade600,
                             ),
                             textAlign: TextAlign.center,
                           ),
@@ -3369,16 +3793,26 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue.shade700,
                       foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
                       elevation: 4,
                       shadowColor: Colors.blue.shade700.withOpacity(0.4),
                     ),
-                    onPressed: _isChecking ? null : () {
-                      widget.lockdownService.openDeveloperSettings();
-                    },
+                    onPressed: _isChecking
+                        ? null
+                        : () {
+                            widget.lockdownService.openDeveloperSettings();
+                          },
                     icon: const Icon(Icons.settings_rounded, size: 22),
-                    label: const Text('Buka Pengaturan',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+                    label: const Text(
+                      'Buka Pengaturan',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -3389,13 +3823,23 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                   child: OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.green.shade700,
-                      side: BorderSide(color: Colors.green.shade400, width: 1.5),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      side: BorderSide(
+                        color: Colors.green.shade400,
+                        width: 1.5,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
                     ),
                     onPressed: _isChecking ? null : _recheckThreats,
                     icon: const Icon(Icons.refresh_rounded, size: 20),
-                    label: const Text('Cek Ulang',
-                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                    label: const Text(
+                      'Cek Ulang',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -3404,7 +3848,11 @@ class _SecurityBlockingDialogState extends State<_SecurityBlockingDialog>
                   onPressed: widget.onExit,
                   child: Text(
                     'Keluar dari Aplikasi',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade500, decoration: TextDecoration.underline),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade500,
+                      decoration: TextDecoration.underline,
+                    ),
                   ),
                 ),
               ],

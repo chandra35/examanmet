@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -24,17 +24,103 @@ class _SplashScreenState extends State<SplashScreen> {
   String _errorMessage = '';
   bool _loading = true;
 
+  String _formatVersionLabel(PackageInfo info) {
+    final buildNumber = info.buildNumber.trim();
+    if (buildNumber.isEmpty) return info.version;
+    return '${info.version}+${info.buildNumber}';
+  }
+
+  bool _isVersionLower(String current, String minimum) {
+    List<int> parse(String value) => value
+        .split('.')
+        .map(
+          (part) => int.tryParse(part.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0,
+        )
+        .toList();
+
+    final currentParts = parse(current);
+    final minimumParts = parse(minimum);
+    final maxLength = currentParts.length > minimumParts.length
+        ? currentParts.length
+        : minimumParts.length;
+
+    for (var i = 0; i < maxLength; i++) {
+      final currentPart = i < currentParts.length ? currentParts[i] : 0;
+      final minimumPart = i < minimumParts.length ? minimumParts[i] : 0;
+      if (currentPart < minimumPart) return true;
+      if (currentPart > minimumPart) return false;
+    }
+
+    return false;
+  }
+
   @override
   void initState() {
     super.initState();
     _init();
   }
 
+  Future<bool> _ensureAndroidPermissions() async {
+    if (!Platform.isAndroid) return true;
+
+    setState(() => _statusText = 'Memeriksa izin proteksi...');
+
+    var hasOverlay = await _lockdownService.hasOverlayPermission();
+    if (!hasOverlay) {
+      await _lockdownService.requestOverlayPermission();
+      await Future.delayed(const Duration(seconds: 2));
+      hasOverlay = await _lockdownService.hasOverlayPermission();
+    }
+
+    var hasDnd = await _lockdownService.hasDndAccess();
+    if (!hasDnd) {
+      await _lockdownService.requestDndAccess();
+      await Future.delayed(const Duration(seconds: 2));
+      hasDnd = await _lockdownService.hasDndAccess();
+    }
+
+    final missing = <String>[];
+    if (!hasOverlay) {
+      missing.add(
+        'Izin tampil di atas aplikasi lain belum aktif. Tanpa izin ini, swipe status bar/notifikasi masih bisa lolos.',
+      );
+    }
+    if (!hasDnd) {
+      missing.add(
+        'Akses Jangan Ganggu (DND) belum aktif. Notifikasi dan panggilan belum bisa diblokir penuh.',
+      );
+    }
+
+    if (missing.isNotEmpty) {
+      if (!mounted) return false;
+      setState(() {
+        _hasError = true;
+        _loading = false;
+        _statusText = 'Proteksi belum siap';
+        _errorMessage = missing.join('\n\n');
+      });
+      return false;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final oemGranted = prefs.getBool('oem_permission_granted') ?? false;
+    final oemInfo = await _lockdownService.checkOemPermission();
+    if (!oemGranted &&
+        oemInfo['needs_permission'] == true &&
+        oemInfo['has_intent'] == true) {
+      await _lockdownService.openOemPermissionSettings();
+      await Future.delayed(const Duration(seconds: 2));
+      await _lockdownService.markOemPermissionGranted();
+    }
+
+    return true;
+  }
+
   Future<void> _init() async {
     // Load version
     try {
       final info = await PackageInfo.fromPlatform();
-      _appVersion = info.version;
+      _appVersion = _formatVersionLabel(info);
     } catch (_) {
       _appVersion = '';
     }
@@ -44,7 +130,11 @@ class _SplashScreenState extends State<SplashScreen> {
     setState(() => _statusText = 'Menghubungi server...');
     ExamConfig? config;
     try {
-      config = await _configService.fetchConfig();
+      config = await _configService.fetchConfig(
+        allowRuntimeFallback: false,
+        allowCacheFallback: false,
+        allowDefaultFallback: false,
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -57,9 +147,25 @@ class _SplashScreenState extends State<SplashScreen> {
     }
 
     if (!mounted) return;
+    final resolvedConfig = config;
+
+    if (_appVersion.isNotEmpty &&
+        _isVersionLower(
+          _appVersion.split('+').first,
+          resolvedConfig.minimumAppVersion,
+        )) {
+      setState(() {
+        _hasError = true;
+        _loading = false;
+        _errorMessage =
+            'Versi aplikasi terlalu lama. Minimal ${resolvedConfig.minimumAppVersion}, versi terpasang $_appVersion.';
+        _statusText = 'Perlu update aplikasi';
+      });
+      return;
+    }
 
     // Check active
-    if (!config.isActive) {
+    if (!resolvedConfig.isActive) {
       setState(() {
         _hasError = true;
         _loading = false;
@@ -69,39 +175,13 @@ class _SplashScreenState extends State<SplashScreen> {
       return;
     }
 
-    // Permissions (first launch only)
+    // Permissions
+    final permissionsReady = await _ensureAndroidPermissions();
+    if (!permissionsReady) {
+      return;
+    }
+
     if (Platform.isAndroid) {
-      final prefs = await SharedPreferences.getInstance();
-      final done = prefs.getBool('permissions_setup_done') ?? false;
-
-      if (!done) {
-        setState(() => _statusText = 'Memeriksa izin...');
-
-        // Overlay
-        final hasOverlay = await _lockdownService.hasOverlayPermission();
-        if (!hasOverlay) {
-          await _lockdownService.requestOverlayPermission();
-          await Future.delayed(const Duration(seconds: 2));
-        }
-
-        // DND
-        final hasDnd = await _lockdownService.hasDndAccess();
-        if (!hasDnd) {
-          await _lockdownService.requestDndAccess();
-          await Future.delayed(const Duration(seconds: 2));
-        }
-
-        // OEM background permission
-        final oemInfo = await _lockdownService.checkOemPermission();
-        if (oemInfo['needs_permission'] == true && oemInfo['has_intent'] == true) {
-          await _lockdownService.openOemPermissionSettings();
-          await Future.delayed(const Duration(seconds: 2));
-          await _lockdownService.markOemPermissionGranted();
-        }
-
-        await prefs.setBool('permissions_setup_done', true);
-      }
-
       // Bluetooth: always check every launch (not just first time)
       if (mounted) setState(() => _statusText = 'Memeriksa Bluetooth...');
       final btStatus = await _lockdownService.checkBluetooth();
@@ -124,14 +204,16 @@ class _SplashScreenState extends State<SplashScreen> {
     });
 
     // Announcement
-    if (config.announcement != null && config.announcement!.isNotEmpty) {
+    if (resolvedConfig.announcement != null &&
+        resolvedConfig.announcement!.isNotEmpty) {
       if (!mounted) return;
-      await _showAnnouncement(config);
+      await _showAnnouncement(resolvedConfig);
     }
 
     // Navigate
     if (!mounted) return;
-    if (config.appPassword != null && config.appPassword!.isNotEmpty) {
+    if (resolvedConfig.appPassword != null &&
+        resolvedConfig.appPassword!.isNotEmpty) {
       Navigator.pushReplacementNamed(context, '/password');
     } else {
       Navigator.pushReplacementNamed(context, '/exam');
@@ -159,13 +241,18 @@ class _SplashScreenState extends State<SplashScreen> {
       transitionDuration: const Duration(milliseconds: 400),
       pageBuilder: (_, __, ___) => const SizedBox.shrink(),
       transitionBuilder: (ctx, anim, secondAnim, child) {
-        final curvedAnim = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        final curvedAnim = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutBack,
+        );
         return Transform.scale(
           scale: curvedAnim.value,
           child: Opacity(
             opacity: anim.value,
             child: Dialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
               elevation: 20,
               child: Container(
                 constraints: const BoxConstraints(maxWidth: 380),
@@ -189,7 +276,10 @@ class _SplashScreenState extends State<SplashScreen> {
                           gradient: LinearGradient(
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
-                            colors: [Colors.orange.shade300, Colors.deepOrange.shade400],
+                            colors: [
+                              Colors.orange.shade300,
+                              Colors.deepOrange.shade400,
+                            ],
                           ),
                           shape: BoxShape.circle,
                           boxShadow: [
@@ -200,12 +290,19 @@ class _SplashScreenState extends State<SplashScreen> {
                             ),
                           ],
                         ),
-                        child: const Icon(Icons.campaign_rounded, color: Colors.white, size: 38),
+                        child: const Icon(
+                          Icons.campaign_rounded,
+                          color: Colors.white,
+                          size: 38,
+                        ),
                       ),
                       const SizedBox(height: 20),
                       ShaderMask(
                         shaderCallback: (bounds) => LinearGradient(
-                          colors: [Colors.orange.shade700, Colors.deepOrange.shade600],
+                          colors: [
+                            Colors.orange.shade700,
+                            Colors.deepOrange.shade600,
+                          ],
                         ).createShader(bounds),
                         child: const Text(
                           'Pengumuman',
@@ -222,7 +319,10 @@ class _SplashScreenState extends State<SplashScreen> {
                         height: 3,
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
-                            colors: [Colors.orange.shade300, Colors.deepOrange.shade300],
+                            colors: [
+                              Colors.orange.shade300,
+                              Colors.deepOrange.shade300,
+                            ],
                           ),
                           borderRadius: BorderRadius.circular(2),
                         ),
@@ -268,7 +368,10 @@ class _SplashScreenState extends State<SplashScreen> {
                               SizedBox(width: 8),
                               Text(
                                 'Mengerti',
-                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ],
                           ),
@@ -355,15 +458,24 @@ class _SplashScreenState extends State<SplashScreen> {
                   decoration: BoxDecoration(
                     color: Colors.red.shade900.withOpacity(0.4),
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: Colors.red.shade300.withOpacity(0.3)),
+                    border: Border.all(
+                      color: Colors.red.shade300.withOpacity(0.3),
+                    ),
                   ),
                   child: Column(
                     children: [
-                      Icon(Icons.error_outline, color: Colors.red.shade200, size: 40),
+                      Icon(
+                        Icons.error_outline,
+                        color: Colors.red.shade200,
+                        size: 40,
+                      ),
                       const SizedBox(height: 12),
                       Text(
                         _errorMessage,
-                        style: TextStyle(color: Colors.red.shade100, fontSize: 13),
+                        style: TextStyle(
+                          color: Colors.red.shade100,
+                          fontSize: 13,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 16),
@@ -372,11 +484,19 @@ class _SplashScreenState extends State<SplashScreen> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white,
                           foregroundColor: Colors.red.shade700,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 28,
+                            vertical: 12,
+                          ),
                         ),
                         icon: const Icon(Icons.refresh, size: 20),
-                        label: const Text('Coba Lagi', style: TextStyle(fontWeight: FontWeight.w600)),
+                        label: const Text(
+                          'Coba Lagi',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
                       ),
                     ],
                   ),

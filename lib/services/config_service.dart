@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/exam_config.dart';
 
@@ -9,8 +10,11 @@ class ConfigService {
   static const String _defaultApiBaseUrl = 'https://simansa.man1metro.sch.id';
   static const String _configCacheKey = 'exam_config_cache';
   static const String _apiBaseUrlKey = 'api_base_url';
+  static const String _supervisorPasswordKey = 'secure_supervisor_password';
+  static ExamConfig? _runtimeConfig;
 
   final Dio _dio;
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
   ConfigService() : _dio = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 15),
@@ -34,26 +38,42 @@ class ConfigService {
   }
 
   /// Fetch config from API and cache it locally
-  Future<ExamConfig> fetchConfig() async {
+  Future<ExamConfig> fetchConfig({
+    bool allowRuntimeFallback = true,
+    bool allowCacheFallback = true,
+    bool allowDefaultFallback = false,
+  }) async {
     try {
       final baseUrl = await getApiBaseUrl();
       final response = await _dio.get('$baseUrl/api/exam-browser/config');
 
       if (response.statusCode == 200 && response.data['success'] == true) {
         final config = ExamConfig.fromJson(response.data['data']);
+        _runtimeConfig = config;
         // Cache the config locally
         await _cacheConfig(config);
+        await _cacheSupervisorPassword(config.supervisorPassword);
         return config;
       } else {
         throw Exception(response.data['message'] ?? 'Failed to fetch config');
       }
     } catch (e) {
+      if (allowRuntimeFallback && _runtimeConfig != null) {
+        return _runtimeConfig!;
+      }
+
       // Try to use cached config
-      final cached = await getCachedConfig();
-      if (cached != null) return cached;
+      if (allowCacheFallback) {
+        final cached = await getCachedConfig();
+        if (cached != null) return cached;
+      }
 
       // Return defaults as last resort
-      return ExamConfig.defaults();
+      if (allowDefaultFallback) {
+        return ExamConfig.defaults();
+      }
+
+      throw Exception('Gagal mengambil konfigurasi ujian dari server.');
     }
   }
 
@@ -73,7 +93,15 @@ class ConfigService {
   /// Cache config locally
   Future<void> _cacheConfig(ExamConfig config) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_configCacheKey, jsonEncode(config.toJson()));
+    await prefs.setString(_configCacheKey, jsonEncode(config.toCacheJson()));
+  }
+
+  Future<void> _cacheSupervisorPassword(String? password) async {
+    if (password == null || password.isEmpty) {
+      await _secureStorage.delete(key: _supervisorPasswordKey);
+      return;
+    }
+    await _secureStorage.write(key: _supervisorPasswordKey, value: password);
   }
 
   /// Verify password with the API
@@ -93,21 +121,27 @@ class ConfigService {
       }
       return false;
     } catch (e) {
-      // Fallback: verify against cached config
-      final config = await getCachedConfig();
-      if (config != null) {
-        if (type == 'exit') {
-          return config.exitPassword == null ||
-              config.exitPassword!.isEmpty ||
-              config.exitPassword == password;
-        } else {
-          return config.appPassword == null ||
-              config.appPassword!.isEmpty ||
-              config.appPassword == password;
-        }
-      }
-      return false;
+      throw Exception('Verifikasi password gagal karena server tidak dapat dihubungi.');
     }
+  }
+
+  Future<bool> hasSupervisorPassword() async {
+    if (_runtimeConfig?.supervisorPassword != null &&
+        _runtimeConfig!.supervisorPassword!.isNotEmpty) {
+      return true;
+    }
+    final stored = await _secureStorage.read(key: _supervisorPasswordKey);
+    return stored != null && stored.isNotEmpty;
+  }
+
+  Future<bool> verifySupervisorPassword(String password) async {
+    final livePassword = _runtimeConfig?.supervisorPassword;
+    if (livePassword != null && livePassword.isNotEmpty) {
+      return livePassword == password;
+    }
+
+    final stored = await _secureStorage.read(key: _supervisorPasswordKey);
+    return stored != null && stored.isNotEmpty && stored == password;
   }
 
   /// Ping the API to check connectivity
@@ -131,5 +165,6 @@ class ConfigService {
   Future<void> clearCache() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_configCacheKey);
+    await _secureStorage.delete(key: _supervisorPasswordKey);
   }
 }

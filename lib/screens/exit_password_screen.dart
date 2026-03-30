@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:ui';
@@ -87,11 +86,11 @@ class _ExitPasswordScreenState extends State<ExitPasswordScreen>
       if (!mounted) return;
 
       if (verified) {
-        // Disable lockdown and exit
-        await _lockdownService.disableLockdown();
+        final closed = await _lockdownService.closeApp();
         await WakelockPlus.disable();
-        // Force kill the app process — exit(0) is reliable unlike SystemNavigator.pop()
-        exit(0);
+        if (!closed) {
+          await SystemNavigator.pop();
+        }
       } else {
         _attempts++;
         _shake();

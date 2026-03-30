@@ -16,6 +16,8 @@ class ExamConfig {
   final bool allowNavigation;
   final bool allowReload;
   final bool showToolbar;
+  final bool testingAllowDeveloperOptions;
+  final bool testingAllowUsbDebugging;
   final bool detectBluetooth;
   final bool detectHeadset;
   final bool detectRoot;
@@ -45,6 +47,8 @@ class ExamConfig {
     this.allowNavigation = false,
     this.allowReload = true,
     this.showToolbar = true,
+    this.testingAllowDeveloperOptions = false,
+    this.testingAllowUsbDebugging = false,
     this.detectBluetooth = true,
     this.detectHeadset = true,
     this.detectRoot = true,
@@ -90,6 +94,10 @@ class ExamConfig {
       allowNavigation: json['allow_navigation'] ?? false,
       allowReload: json['allow_reload'] ?? true,
       showToolbar: json['show_toolbar'] ?? true,
+      testingAllowDeveloperOptions:
+          json['testing_allow_developer_options'] ?? false,
+      testingAllowUsbDebugging:
+          json['testing_allow_usb_debugging'] ?? false,
       detectBluetooth: json['detect_bluetooth'] ?? true,
       detectHeadset: json['detect_headset'] ?? true,
       detectRoot: json['detect_root'] ?? true,
@@ -127,6 +135,41 @@ class ExamConfig {
       'allow_navigation': allowNavigation,
       'allow_reload': allowReload,
       'show_toolbar': showToolbar,
+      'testing_allow_developer_options': testingAllowDeveloperOptions,
+      'testing_allow_usb_debugging': testingAllowUsbDebugging,
+      'detect_bluetooth': detectBluetooth,
+      'detect_headset': detectHeadset,
+      'detect_root': detectRoot,
+      'alert_sound_on_violation': alertSoundOnViolation,
+      'allowed_urls': allowedUrls,
+      'blocked_apps': blockedApps,
+      'custom_css': customCss,
+      'custom_js': customJs,
+      'is_active': isActive,
+      'minimum_app_version': minimumAppVersion,
+      'announcement': announcement,
+      'updated_at': updatedAt,
+    };
+  }
+
+  /// Sanitized JSON for persistent cache.
+  /// Sensitive secrets are intentionally excluded from disk storage.
+  Map<String, dynamic> toCacheJson() {
+    return {
+      'app_name': appName,
+      'school_name': schoolName,
+      'logo_url': logoUrl,
+      'moodle_url': moodleUrl,
+      'user_agent': userAgent,
+      'seb_config_key': sebConfigKey,
+      'seb_exam_key': sebExamKey,
+      'allow_screenshot': allowScreenshot,
+      'allow_clipboard': allowClipboard,
+      'allow_navigation': allowNavigation,
+      'allow_reload': allowReload,
+      'show_toolbar': showToolbar,
+      'testing_allow_developer_options': testingAllowDeveloperOptions,
+      'testing_allow_usb_debugging': testingAllowUsbDebugging,
       'detect_bluetooth': detectBluetooth,
       'detect_headset': detectHeadset,
       'detect_root': detectRoot,
