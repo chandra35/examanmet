@@ -62,8 +62,8 @@ class MainActivity : FlutterActivity() {
     // Brands that re-show "Pinned" toast when hideSystemUI() is called during Lock Task.
     // Fix: skip immersive enforcement when screen is already pinned.
     private val BRANDS_SKIP_IMMERSIVE_WHEN_PINNED = setOf(
-        "vivo",
-        "infinix", "tecno", "itel"  // Transsion brands — same pinning issue
+        "vivo", "samsung",
+        "infinix", "tecno", "itel"  // Transsion brands
     )
 
     // Brands where screen pinning (Lock Task) causes persistent dialog loops.
@@ -71,8 +71,8 @@ class MainActivity : FlutterActivity() {
     // while the dialog is pending triggers Vivo FuntouchOS to stack new dialogs.
     // Fix: skip startLockTask() entirely — rely on immersive + overlay + DND instead.
     private val BRANDS_SKIP_SCREEN_PINNING = setOf(
-        "vivo",
-        "infinix", "tecno", "itel"  // Transsion brands — dialog loop on pin
+        "vivo", "samsung",
+        "infinix", "tecno", "itel"  // Transsion brands
     )
 
     // Brands that show re-pin confirmation dialog on every onWindowFocusChanged.
