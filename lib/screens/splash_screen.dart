@@ -402,15 +402,30 @@ class _SplashScreenState extends State<SplashScreen> {
 
               const Spacer(flex: 3),
 
-              // Bottom label
+              // Bottom label with version
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
-                child: Text(
-                  'MAN 1 Metro',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.white.withOpacity(0.4),
-                  ),
+                child: Column(
+                  children: [
+                    Text(
+                      'MAN 1 Metro',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withOpacity(0.4),
+                      ),
+                    ),
+                    if (_appVersion.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'v$_appVersion',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.white.withOpacity(0.3),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],

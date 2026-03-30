@@ -218,41 +218,6 @@ class NotificationService {
     return [];
   }
 
-      if (response.statusCode == 200 && response.data['success'] == true) {
-        final List notifications = response.data['data'] ?? [];
-        final serverTime = response.data['server_time'] as String?;
-
-        // Get list of already shown notification IDs
-        final seenIds = prefs.getStringList(_seenIdsKey) ?? [];
-
-        for (final notif in notifications) {
-          final id = notif['id'] as String;
-          if (!seenIds.contains(id)) {
-            // Show local notification
-            await _showNotification(notif);
-            seenIds.add(id);
-            newNotifications.add(Map<String, dynamic>.from(notif));
-          }
-        }
-
-        // Save state
-        if (serverTime != null) {
-          await prefs.setString(_lastCheckKey, serverTime);
-        }
-        // Keep only last 100 seen IDs to avoid unbounded growth
-        if (seenIds.length > 100) {
-          await prefs.setStringList(
-              _seenIdsKey, seenIds.sublist(seenIds.length - 100));
-        } else {
-          await prefs.setStringList(_seenIdsKey, seenIds);
-        }
-      }
-    } catch (e) {
-      debugPrint('Failed to check notifications: $e');
-    }
-    return newNotifications;
-  }
-
   /// Show a local notification
   Future<void> _showNotification(Map<String, dynamic> notif) async {
     final type = notif['type'] as String? ?? 'info';
@@ -319,20 +284,9 @@ class NotificationService {
     );
   }
 
-  /// Get notifications for in-app display (returns list of notification maps)
+  /// Get notifications for in-app display
+  /// DISABLED — same reason as checkForNotifications. Use FCM push only.
   Future<List<Map<String, dynamic>>> getActiveNotifications() async {
-    try {
-      final configService = ConfigService();
-      final baseUrl = await configService.getApiBaseUrl();
-
-      final response = await _dio.get('$baseUrl/api/exam-browser/notifications');
-
-      if (response.statusCode == 200 && response.data['success'] == true) {
-        return List<Map<String, dynamic>>.from(response.data['data'] ?? []);
-      }
-    } catch (e) {
-      debugPrint('Failed to get notifications: $e');
-    }
     return [];
   }
 }

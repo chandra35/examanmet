@@ -63,6 +63,16 @@ android {
             isDebuggable = false
         }
     }
+
+    // Custom APK output filename
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            val versionName = variant.versionName ?: "1.2.1"
+            output.outputFileName = "CBTNewV${versionName}-UPDATE.apk"
+        }
+    }
 }
 
 dependencies {
