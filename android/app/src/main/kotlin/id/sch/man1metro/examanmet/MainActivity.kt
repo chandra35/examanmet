@@ -1572,7 +1572,10 @@ class MainActivity : FlutterActivity() {
             )
             for (service in enabledServices) {
                 val packageName = service.resolveInfo?.serviceInfo?.packageName ?: continue
-                if (!systemPackages.contains(packageName)) {
+                // Use prefix match — e.g. "com.google.android.accessibility.switchaccess"
+                // should be whitelisted by "com.google.android.accessibility"
+                val isWhitelisted = systemPackages.any { packageName.startsWith(it) }
+                if (!isWhitelisted) {
                     services.add(packageName)
                 }
             }
