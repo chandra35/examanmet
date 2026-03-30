@@ -57,7 +57,10 @@ class MainActivity : FlutterActivity() {
     // ===== BRAND-AWARE BEHAVIOR SYSTEM =====
     // Detected once at startup, used throughout the app.
     // To handle a new brand issue, just add the brand string to the relevant Set.
-    private val deviceBrand: String by lazy { Build.MANUFACTURER.lowercase() }
+    // Uses both MANUFACTURER and BRAND for reliable detection.
+    private val deviceBrand: String by lazy {
+        "${Build.MANUFACTURER.lowercase()} ${Build.BRAND.lowercase()}"
+    }
 
     // Brands that re-show "Pinned" toast when hideSystemUI() is called during Lock Task.
     // Fix: skip immersive enforcement when screen is already pinned.
@@ -66,27 +69,20 @@ class MainActivity : FlutterActivity() {
         "infinix", "tecno", "itel"  // Transsion brands
     )
 
-    // Brands where screen pinning (Lock Task) causes persistent dialog loops.
-    // The pin confirmation dialog re-appears endlessly because calling hideSystemUI()
-    // while the dialog is pending triggers Vivo FuntouchOS to stack new dialogs.
-    // Fix: skip startLockTask() entirely — rely on immersive + overlay + DND instead.
-    private val BRANDS_SKIP_SCREEN_PINNING = setOf(
-        "vivo", "samsung",
-        "infinix", "tecno", "itel"  // Transsion brands
-    )
-
-    // Brands that show re-pin confirmation dialog on every onWindowFocusChanged.
-    // Fix: never call startLockTask() outside of startKioskMode.
-    // (Currently ALL brands use pin-once approach, so this is informational.)
-    private val BRANDS_REPIN_DIALOG_LOOP = setOf(
-        "samsung"
-    )
+    // Screen pinning (Lock Task) is DISABLED for ALL brands.
+    // Too many brands (Samsung, Vivo, Infinix, etc.) show persistent confirmation
+    // dialogs that loop endlessly. Our other protections are sufficient:
+    // - Immersive mode (hides nav/status bar)
+    // - Status bar overlay blocker (6dp transparent strip)
+    // - DND mode (blocks notifications)
+    // - collapseStatusBar() via reflection
+    // - bringAppToFront on pause/stop
+    private val shouldSkipScreenPinning: Boolean
+        get() = true  // Always skip — all brands use immersive + overlay instead
 
     // Computed properties
     private val shouldSkipImmersiveWhenPinned: Boolean
         get() = BRANDS_SKIP_IMMERSIVE_WHEN_PINNED.any { deviceBrand.contains(it) }
-    private val shouldSkipScreenPinning: Boolean
-        get() = BRANDS_SKIP_SCREEN_PINNING.any { deviceBrand.contains(it) }
 
     // Bluetooth state change receiver
     private val bluetoothReceiver = object : BroadcastReceiver() {
