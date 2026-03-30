@@ -62,7 +62,8 @@ class MainActivity : FlutterActivity() {
     // Brands that re-show "Pinned" toast when hideSystemUI() is called during Lock Task.
     // Fix: skip immersive enforcement when screen is already pinned.
     private val BRANDS_SKIP_IMMERSIVE_WHEN_PINNED = setOf(
-        "vivo"
+        "vivo",
+        "infinix", "tecno", "itel"  // Transsion brands — same pinning issue
     )
 
     // Brands where screen pinning (Lock Task) causes persistent dialog loops.
@@ -70,7 +71,8 @@ class MainActivity : FlutterActivity() {
     // while the dialog is pending triggers Vivo FuntouchOS to stack new dialogs.
     // Fix: skip startLockTask() entirely — rely on immersive + overlay + DND instead.
     private val BRANDS_SKIP_SCREEN_PINNING = setOf(
-        "vivo"
+        "vivo",
+        "infinix", "tecno", "itel"  // Transsion brands — dialog loop on pin
     )
 
     // Brands that show re-pin confirmation dialog on every onWindowFocusChanged.
@@ -443,7 +445,8 @@ class MainActivity : FlutterActivity() {
                         "vivo", "oppo", "realme", "oneplus",
                         "xiaomi", "redmi", "poco",
                         "huawei", "honor",
-                        "meizu", "letv", "asus"
+                        "meizu", "letv", "asus",
+                        "infinix", "tecno", "itel"  // Transsion brands
                     )
                     val intentActions = getOemAutostartIntents()
                     result.success(mapOf(
@@ -536,6 +539,11 @@ class MainActivity : FlutterActivity() {
             }
             manufacturer.contains("samsung") -> {
                 intents.add(Intent().setClassName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"))
+            }
+            manufacturer.contains("infinix") || manufacturer.contains("tecno") || manufacturer.contains("itel") -> {
+                // Transsion brands — HiOS / XOS phone manager
+                intents.add(Intent().setClassName("com.transsion.phonemanager", "com.transsion.phonemanager.module.autostart.AutoStartActivity"))
+                intents.add(Intent("com.transsion.phonemanager.permission.AUTO_START"))
             }
         }
 
