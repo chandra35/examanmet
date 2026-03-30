@@ -194,18 +194,15 @@ class _ExamBrowserScreenState extends State<ExamBrowserScreen>
       (_) => SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
     );
 
-    // Config refresh (lightweight network call)
+    // Config refresh (lightweight network call — every 5 min to reduce server load)
     _configRefreshTimer = Timer.periodic(
-      const Duration(seconds: 60),
+      const Duration(seconds: 300),
       (_) => _refreshConfig(),
     );
 
-    // Notification check
-    _notifCheckTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => _checkNotifications(),
-    );
-    Future.delayed(const Duration(seconds: 3), _checkNotifications);
+    // Notification polling DISABLED — was overloading server (30s × N students).
+    // Notifications now handled via FCM push only.
+    // _notifCheckTimer kept null — no periodic polling.
 
     // ========================================================
     // LEVEL 2 (CAPABLE DEVICES ONLY): Aggressive protections

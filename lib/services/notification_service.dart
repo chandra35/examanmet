@@ -212,22 +212,11 @@ class NotificationService {
   }
 
   /// Check for new notifications from the server.
-  /// Returns list of NEW (unseen) notifications for in-app handling.
+  /// DISABLED — polling every 30s was overloading the simansa server.
+  /// Notifications now handled via FCM push only.
   Future<List<Map<String, dynamic>>> checkForNotifications() async {
-    final List<Map<String, dynamic>> newNotifications = [];
-    try {
-      final configService = ConfigService();
-      final baseUrl = await configService.getApiBaseUrl();
-      final prefs = await SharedPreferences.getInstance();
-      final lastCheck = prefs.getString(_lastCheckKey);
-
-      // Build URL with 'since' parameter
-      String url = '$baseUrl/api/exam-browser/notifications';
-      if (lastCheck != null) {
-        url += '?since=${Uri.encodeComponent(lastCheck)}';
-      }
-
-      final response = await _dio.get(url);
+    return [];
+  }
 
       if (response.statusCode == 200 && response.data['success'] == true) {
         final List notifications = response.data['data'] ?? [];
